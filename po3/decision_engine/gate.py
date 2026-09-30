@@ -9,7 +9,7 @@ class DecisionGate:
     def to_dict(self): return asdict(self)
 
 def apply_gate(validation, decisions):
-    if validation.bloqueado:
+    if validation.bloqueado or "CALENDARIO" in validation.dados_ausentes:
         return DecisionGate("BLOQUEADO", validation.problemas or ["DADOS_CRITICOS_AUSENTES"], "Análise bloqueada: dados críticos insuficientes ou desatualizados.")
     if not decisions:
         return DecisionGate("BLOQUEADO", ["RESPOSTA_LLM_INVALIDA"], "Análise bloqueada: a resposta estruturada da IA não foi validada.")
