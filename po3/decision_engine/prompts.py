@@ -17,3 +17,11 @@ def build_decision_prompt(state: dict, validation: dict) -> str:
 
 def build_narrative_prompt(state: dict, decisions: list[dict], gate: dict, consensus: dict, model: str | None) -> str:
     return "Responda em português do Brasil usando exclusivamente os dados abaixo. Gere exatamente três blocos: MACROECONOMIA E DIA A DIA; IMPACTO NA BOLSA; INSIGHT OPERACIONAL. Seja objetivo, diferencie fatos e inferências, não invente dados, não transforme contexto em ordem e respeite o gate. Não faça apresentação sobre sua identidade.\n" + json.dumps({"estado": state, "decisoes": decisions, "gate": gate, "consenso": consensus, "modelo": model}, ensure_ascii=False, default=str)
+
+def build_repair_prompt(raw_text: str, erro: str) -> str:
+    return (
+        "Corrija somente a formatação JSON da resposta abaixo. Retorne exclusivamente um objeto JSON válido "
+        "com a chave decisoes contendo exatamente os seis itens e os mesmos valores presentes no texto. "
+        "Não invente, complete, remova ou altere campos/valores; se não for possível preservar os dados, "
+        "retorne um objeto vazio. O schema original continua obrigatório. Erro detectado: " + str(erro) + "\n\n" + raw_text
+    )

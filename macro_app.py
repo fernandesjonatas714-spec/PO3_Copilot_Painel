@@ -12,6 +12,7 @@ from po3.mt5_reader import MT5ReadError, read_snapshot
 from po3.external_data import fetch_official_calendar, fetch_daily_context, filter_relevant_events, get_next_high_impact_event
 from po3.ai_service import OpenRouterError, configured_model_name, send_message, send_message_detailed
 from po3.decision_engine import DecisionEngine
+from po3.decision_engine.narrative import generate_narrative
 from po3.learning_store import record_ai_error, recent_analyses, save_analysis
 
 DEFAULT_TERMINAL = r"C:\Program Files\Clear Investimentos MT5 Terminal\terminal64.exe"
@@ -204,17 +205,9 @@ def _run_daily_analysis(snapshot):
             )
         structured = DecisionEngine(detailed, configured_model_name()).run(snapshot, context)
         if structured.decisions and not structured.error:
-            from po3.decision_engine.prompts import build_narrative_prompt
-            narrative_result = send_message_detailed(
-                build_narrative_prompt(
-                    structured.state.to_dict(),
-                    [x.to_dict() for x in structured.decisions],
-                    structured.gate.to_dict(),
-                    structured.consensus,
-                    structured.model_used,
-                ),
-                system_instruction="Responda somente com os três blocos narrativos solicitados, sempre em português do Brasil. Não invente dados.",
-            )
+            def narrative_call(message):
+                return send_message_detailed(message, system_instruction="Responda somente com os três blocos narrativos solicitados, sempre em português do Brasil. Não invente dados.")
+            narrative_result = generate_narrative(narrative_call, structured.state, structured.decisions, structured.gate, structured.consensus, structured.model_used)
             structured.narrative = narrative_result["content"]
             structured.model_used = narrative_result.get("model_used") or structured.model_used
             structured.fallback_used = structured.fallback_used or bool(narrative_result.get("fallback_used"))
@@ -230,36 +223,48 @@ def _render_structured_summary(data: dict) -> None:
         return
     gate = data.get("gate", {})
     validation = data.get("validation", {})
-    decisions = {x.get("id_decisao"): x.get("decisao") for x in data.get("decisoes", [])}
+    decision_rows = {x.get("id_decisao"): x for x in data.get("decisoes", [])}
+    decisions = {key: row.get("decisao") for key, row in decision_rows.items()}
     labels = {
-        "APETITE_A_RISCO": "Apetite a risco", "AVERSAO_A_RISCO": "Aversão a risco",
-        "MISTO": "Misto", "INDETERMINADO": "Indeterminado", "POSITIVO": "Positivo",
-        "NEGATIVO": "Negativo", "NEUTRO": "Neutro", "ALTISTA": "Altista",
-        "BAIXISTA": "Baixista", "CONFLITANTE": "Conflitante",
+        "APETITE_A_RISCO": "Apetite a risco", "AVERSAO_A_RISCO": "Aversão a risco", "MISTO": "Misto",
+        "INDETERMINADO": "Indeterminado", "POSITIVO": "Positivo", "NEGATIVO": "Negativo", "NEUTRO": "Neutro",
+        "ALTISTA": "Altista", "BAIXISTA": "Baixista", "CONFLITANTE": "Conflitante",
         "CONTEXTO_COMPRADOR": "Contexto comprador", "CONTEXTO_VENDEDOR": "Contexto vendedor",
         "AGUARDAR": "Aguardar confirmação", "SEM_SETUP": "Sem setup válido",
         "BLOQUEADO_POR_EVENTO": "Bloqueado por evento", "SIM": "Sim", "NAO": "Não", "NÃO": "Não",
     }
     def label(key):
-        value = decisions.get(key, "INDETERMINADO")
-        return labels.get(str(value), str(value))
+        return labels.get(str(decisions.get(key, "INDETERMINADO")), str(decisions.get(key, "Indisponível")))
     with st.expander("Decisão estruturada", expanded=False):
         cols = st.columns(3)
         cols[0].metric("Regime macro", label("regime_macro"))
         cols[1].metric("Contexto doméstico", label("contexto_domestico"))
         cols[2].metric("Contexto técnico", label("contexto_tecnico"))
         cols = st.columns(3)
-        cols[0].metric("Risco de evento", f"{decisions.get('risco_evento', '—')}/10")
+        cols[0].metric("Risco de evento", decisions.get("risco_evento", "—"))
         cols[1].metric("Conflito de contexto", label("conflito_contexto"))
         cols[2].metric("Contexto operacional", label("contexto_operacional"))
-        st.caption(f"Evidências: {str(validation.get('status', 'indisponíveis')).title()} · Status: {str(gate.get('status', 'BLOQUEADO')).title()}")
-        if data.get("modelo_utilizado"):
-            suffix = " · fallback gratuito" if data.get("fallback_utilizado") else ""
-            st.caption(f"Modelo utilizado: {data['modelo_utilizado']}{suffix}")
+        rank = {"BAIXA": 0, "MÉDIA": 1, "MEDIA": 1, "ALTA": 2}
+        confidences = [str(row.get("confianca", "BAIXA")).upper() for row in decision_rows.values()]
+        conservative = min(confidences, key=lambda value: rank.get(value, 0)) if confidences else "BAIXA"
+        confidence_label = {"ALTA": "Alta", "MÉDIA": "Média", "MEDIA": "Média", "BAIXA": "Baixa"}.get(conservative, "Baixa")
+        evidence = [str(row.get("status_evidencias", "INSUFICIENTES")).title() for row in decision_rows.values()]
+        evidence_label = ", ".join(sorted(set(evidence))) if evidence else "Indisponível"
+        data_label = str(validation.get("status", "INDISPONÍVEIS")).title()
+        st.caption(f"Confiança geral conservadora: {confidence_label}")
+        st.caption(f"Qualidade dos dados: {data_label} · Qualidade das evidências: {evidence_label}")
+        st.caption(f"Status do Decision Gate: {str(gate.get('status', 'BLOQUEADO')).title()}")
+        st.caption(f"Modelo realmente utilizado: {data.get('modelo_utilizado') or 'não disponível'}")
+        st.caption(f"Fallback utilizado: {'Sim' if data.get('fallback_utilizado') else 'Não'}")
         consensus = data.get("consenso", {}).get("status")
         if consensus and consensus != "NAO_EXECUTADA":
             text = "consenso" if consensus == "CONSENSO" else "divergência — revisão recomendada"
-            st.caption(f"Segunda análise: executada · {text}")
+            second_model = data.get("segunda_modelo_utilizado") or "não disponível"
+            st.caption(f"Segunda análise: executada · modelo {second_model} · {text}")
+        else:
+            st.caption("Segunda análise: não acionada · consenso/divergência: não aplicável")
+        if data.get("reparo_json_utilizado"):
+            st.caption("Reparo controlado do JSON: utilizado uma vez")
 
 
 def _render_audio_button(text: str) -> None:
