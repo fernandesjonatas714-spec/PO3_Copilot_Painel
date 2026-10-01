@@ -40,6 +40,15 @@ def get_m1_range(symbol: str, start: datetime | str, end: datetime | str, db_pat
         rows = c.execute("SELECT * FROM market_bars_m1 WHERE symbol=? AND timestamp_utc>=? AND timestamp_utc<=? ORDER BY timestamp_utc", (symbol,iso(start),iso(end))).fetchall()
         return [dict(r) for r in rows]
 
+def get_m1_bar(symbol: str, timestamp: datetime | str, db_path: str | Path) -> dict | None:
+    """Exact M1 bar by open timestamp."""
+    with connect(db_path) as c:
+        row = c.execute(
+            "SELECT * FROM market_bars_m1 WHERE symbol=? AND timestamp_utc=? LIMIT 1",
+            (symbol, iso(timestamp)),
+        ).fetchone()
+        return dict(row) if row else None
+
 def acquire_lease(name: str, symbol: str, db_path: str | Path, owner_id: str | None = None, ttl_seconds: int = 90) -> str | None:
     owner_id = owner_id or f"{os.getpid()}-{uuid.uuid4().hex}"
     now = utc_now(); exp = now + timedelta(seconds=ttl_seconds)

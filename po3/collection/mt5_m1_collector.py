@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from threading import Event
 from typing import Any, Callable
 from po3.storage.migrations import migrate
-from po3.storage.market_repository import acquire_lease, heartbeat, release_lease, insert_m1_bars, latest_m1_timestamp, list_states, update_runtime_status
+from po3.storage.market_repository import acquire_lease, heartbeat, release_lease, insert_m1_bars, latest_m1_timestamp, list_states, update_runtime_status, get_m1_bar
 from po3.outcome_engine import process_pending_outcomes
 from po3.market_state_store import freeze_market_state
 from po3.collection.freshness import assess_freshness
@@ -77,7 +77,14 @@ def run_worker(config:CollectorConfig,mt5:Any,stop_event:Event|None=None,max_cyc
                 process_pending_outcomes(config.db_path,symbol=config.symbol,now_utc=now)
                 slot=_slot(now,config.state_interval_minutes)
                 if freshness.status=="ATUAL" and (last_slot is None or slot>last_slot):
-                    snapshot,context=provider(slot); freeze_market_state(snapshot,context or {},cutoff_at_utc=slot,db_path=config.db_path,symbol=config.symbol); last_slot=slot; process_pending_outcomes(config.db_path,symbol=config.symbol,now_utc=now)
+                    snapshot,context=provider(slot)
+                    expected_start=slot-timedelta(minutes=1)
+                    start_bar=get_m1_bar(config.symbol,expected_start,config.db_path)
+                    start_price=float(start_bar["close"]) if start_bar is not None else None
+                    freeze_market_state(snapshot,context or {},cutoff_at_utc=slot,db_path=config.db_path,symbol=config.symbol,
+                                        start_price=start_price,start_bar_open_time=expected_start,
+                                        start_price_status="DISPONIVEL" if start_bar is not None else "INDISPONIVEL")
+                    last_slot=slot; process_pending_outcomes(config.db_path,symbol=config.symbol,now_utc=now)
             except Exception as exc:
                 print(f"Worker factual: {type(exc).__name__}",flush=True)
             if not heartbeat(config.lease_name,config.symbol,owner,config.db_path,config.lease_ttl_seconds):raise RuntimeError("Lease perdido durante a coleta")

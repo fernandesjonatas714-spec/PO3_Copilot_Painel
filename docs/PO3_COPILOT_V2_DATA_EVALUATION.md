@@ -72,10 +72,10 @@ candle M1 totalmente fechado está dentro de MT5_MAX_FEED_LAG_SECONDS
 Fora da sessão, a ausência de candle é registrada como
 SEM_NOVO_CANDLE_MERCADO_FECHADO, não como erro de feed.
 
-Como o MT5 identifica uma barra pelo horário de abertura, o cutoff é inclusivo
-para a barra aberta no cutoff e exclusivo para a barra aberta no target. Assim,
-para cutoff 10:00 e target 10:05, entram somente as barras 10:00, 10:01,
-10:02, 10:03 e 10:04. O preço futuro é o fechamento da barra aberta às
+Como o MT5 identifica uma barra pelo horário de abertura, o cutoff é exclusivo para a barra aberta no cutoff, pois ela ainda pertence
+à janela futura. Assim, para cutoff 10:00 e target 10:05, o MarketState usa
+somente barras anteriores a 10:00; o Outcome usa 10:00, 10:01, 10:02, 10:03
+e 10:04. O preço futuro é o fechamento da barra aberta às
 10:04, que termina exatamente às 10:05; máximas e mínimas usam o mesmo
 intervalo. A barra 10:05 não entra no Outcome 5m.
 
@@ -84,3 +84,22 @@ barras factuais por atraso temporário, o status é PENDENTE_DADOS. SEM_DADO
 ou MERCADO_FECHADO somente indicam ausência factual confirmada, nunca um
 substituto inventado. O processor pode ser executado repetidamente: quando o
 feed se recupera, o mesmo registro passa a DISPONIVEL sem duplicação.
+
+
+## Convencao oficial de start_price (imutavel)
+
+Para qualquer MarketState, start_bar_open_time e sempre
+cutoff_at_utc menos 1 minuto. O campo start_price e exclusivamente o
+CLOSE da barra M1 aberta nesse horario exato. Para cutoff 10:00, usa-se o
+fechamento da barra 09:59.
+
+A barra aberta no cutoff (10:00) pertence somente a janela futura do Outcome.
+Nao se usa como fallback uma barra mais antiga, last_price, tick posterior ou
+o OPEN da barra do cutoff. Se a barra exata anterior nao existir, o estado e
+persistido com start_price_status=INDISPONIVEL e nenhum resultado causal e
+fabricado.
+
+Para Outcome 5m, com cutoff 10:00 e target 10:05, o intervalo observado e
+[10:00, 10:05): entram as barras abertas 10:00, 10:01, 10:02, 10:03 e
+10:04. future_price e o fechamento de 10:04; future_high e future_low
+sao calculados somente nesse conjunto. A barra aberta as 10:05 e excluida.
