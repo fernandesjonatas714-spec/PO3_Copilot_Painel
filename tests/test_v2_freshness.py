@@ -4,6 +4,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from po3.collection.freshness import assess_freshness
 from po3.collection.mt5_m1_collector import CollectorConfig, run_worker
+from po3.collection.mt5_m1_collector import _record_freshness
+from po3.collection.time_alignment import Mt5TimeAlignment, Mt5TimeAlignmentDetector
 from po3.storage.market_repository import list_states
 
 class FreshnessTests(unittest.TestCase):
@@ -18,6 +20,34 @@ class FreshnessTests(unittest.TestCase):
     def test_closed_market_not_stale(self):
         now=datetime(2026,10,3,12,0,tzinfo=timezone.utc)
         f=assess_freshness(last_closed_at_utc=now-timedelta(hours=2),now_utc=now,market_active=None,max_lag_seconds=120)
+        self.assertEqual(f.status,"SEM_NOVO_CANDLE_MERCADO_FECHADO")
+    def test_closed_weekday_with_stopped_tick_not_really_stale(self):
+        # 19:00 em Sao Paulo (22:00 UTC), fora da sessão configurada.
+        now=datetime(2026,10,1,22,0,tzinfo=timezone.utc)
+        alignment=Mt5TimeAlignmentDetector()
+        alignment.last=Mt5TimeAlignment(now,None,None,10800,now-timedelta(minutes=20),
+            "STALE","STALE","UNSTABLE_OFFSET",detail="tick parado")
+        import os
+        fd,db=tempfile.mkstemp(suffix=".sqlite"); os.close(fd)
+        try: Path(db).unlink(missing_ok=True)
+        except OSError: pass
+        config=CollectorConfig("WIN",db)
+        result=_record_freshness(config,[],alignment,now)
+        self.assertEqual(result.status,"SEM_NOVO_CANDLE_MERCADO_FECHADO")
+        self.assertFalse(result.market_active)
+        try: Path(db).unlink(missing_ok=True)
+        except OSError: pass
+
+    def test_open_market_with_stopped_tick_remains_stale(self):
+        now=datetime(2026,10,1,13,0,tzinfo=timezone.utc)  # 10:00 Sao Paulo
+        f=assess_freshness(last_closed_at_utc=now-timedelta(minutes=10),now_utc=now,
+                           market_active=True,max_lag_seconds=120,last_tick_at_utc=now-timedelta(minutes=10))
+        self.assertEqual(f.status,"MT5_DATA_STALE")
+
+    def test_weekend_is_closed_even_with_stopped_tick(self):
+        now=datetime(2026,10,3,15,0,tzinfo=timezone.utc)
+        f=assess_freshness(last_closed_at_utc=now-timedelta(hours=3),now_utc=now,
+                           market_active=None,last_tick_at_utc=now-timedelta(hours=3))
         self.assertEqual(f.status,"SEM_NOVO_CANDLE_MERCADO_FECHADO")
     def test_stale_worker_does_not_create_state(self):
         import os

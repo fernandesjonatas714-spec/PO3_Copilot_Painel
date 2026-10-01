@@ -8,7 +8,7 @@ from po3.storage.migrations import migrate
 from po3.storage.market_repository import acquire_lease, heartbeat, release_lease, insert_m1_bars, latest_m1_timestamp, list_states, update_runtime_status, get_v2_m1_bar
 from po3.outcome_engine import process_pending_outcomes
 from po3.market_state_store import freeze_market_state
-from po3.collection.freshness import assess_freshness
+from po3.collection.freshness import assess_freshness, is_market_active
 from po3.collection.time_alignment import Mt5TimeAlignmentDetector
 
 @dataclass(frozen=True)
@@ -72,6 +72,21 @@ def _tick_time(mt5:Any,symbol:str)->datetime|None:
 def _record_freshness(config,bars,alignment,now):
     last=max((b["timestamp_utc"] for b in bars),default=None)
     aligned=alignment.last
+    # A ausência de ticks fora da sessão é esperada. O alinhamento continua
+    # registrando o fato técnico, mas isso não pode virar erro de feed.
+    if not is_market_active(now):
+        freshness=assess_freshness(last_closed_at_utc=last,now_utc=now,
+            last_tick_at_utc=aligned.normalized_tick_at_utc,
+            max_lag_seconds=config.max_feed_lag_seconds,market_active=False)
+        update_runtime_status(config.symbol,config.db_path,status=freshness.status,
+            feed_lag_seconds=freshness.feed_lag_seconds,last_closed_at_utc=last.isoformat() if last else None,
+            last_tick_at_utc=aligned.normalized_tick_at_utc.isoformat() if aligned.normalized_tick_at_utc else None,
+            detail=f"{freshness.detail} offset={aligned.detected_offset_seconds or 0:.3f}s",
+            feed_liveness_status=aligned.feed_liveness_status,
+            clock_alignment_status=aligned.clock_alignment_status,
+            detected_offset_seconds=aligned.detected_offset_seconds,
+            normalized_tick_at_utc=aligned.normalized_tick_at_utc.isoformat() if aligned.normalized_tick_at_utc else None)
+        return freshness
     if not alignment.usable:
         if aligned.feed_liveness_status == "STALE":
             status, detail = "MT5_FEED_REALLY_STALE", aligned.detail
@@ -88,7 +103,8 @@ def _record_freshness(config,bars,alignment,now):
             normalized_tick_at_utc=aligned.normalized_tick_at_utc.isoformat() if aligned.normalized_tick_at_utc else None)
         return None
     freshness=assess_freshness(last_closed_at_utc=last,now_utc=now,
-        last_tick_at_utc=aligned.normalized_tick_at_utc,max_lag_seconds=config.max_feed_lag_seconds)
+        last_tick_at_utc=aligned.normalized_tick_at_utc,max_lag_seconds=config.max_feed_lag_seconds,
+        market_active=True)
     update_runtime_status(config.symbol,config.db_path,status=freshness.status,
         feed_lag_seconds=freshness.feed_lag_seconds,last_closed_at_utc=last.isoformat() if last else None,
         last_tick_at_utc=aligned.normalized_tick_at_utc.isoformat() if aligned.normalized_tick_at_utc else None,
