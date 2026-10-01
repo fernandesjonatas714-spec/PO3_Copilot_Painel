@@ -13,7 +13,7 @@ SAO_PAULO = ZoneInfo("America/Sao_Paulo")
 
 def _temporal(states: list[dict], outcomes: list[dict]) -> list[dict]:
     state_by_id = {row.get("id"): row for row in states}
-    grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    grouped: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
     for outcome in outcomes:
         if outcome.get("status") != "DISPONIVEL" or outcome.get("percentage_change") is None:
             continue
@@ -21,9 +21,10 @@ def _temporal(states: list[dict], outcomes: list[dict]) -> list[dict]:
         if not state or not state.get("cutoff_at_utc"):
             continue
         cutoff = datetime.fromisoformat(str(state["cutoff_at_utc"])).astimezone(SAO_PAULO)
-        grouped[(cutoff.date().isoformat(), f"{cutoff.hour:02d}h")].append(outcome)
+        horizon = str(outcome.get("horizon_code") or "DESCONHECIDO")
+        grouped[(cutoff.date().isoformat(), f"{cutoff.hour:02d}h", horizon)].append(outcome)
     rows = []
-    for (date, hour), values in sorted(grouped.items()):
+    for (date, hour, horizon), values in sorted(grouped.items()):
         def median(field):
             numbers = [float(row[field]) for row in values if row.get(field) is not None]
             if not numbers:
@@ -31,7 +32,7 @@ def _temporal(states: list[dict], outcomes: list[dict]) -> list[dict]:
             numbers.sort()
             middle = len(numbers) // 2
             return numbers[middle] if len(numbers) % 2 else (numbers[middle - 1] + numbers[middle]) / 2
-        rows.append({"date": date, "hour": hour, "available": len(values),
+        rows.append({"date": date, "hour": hour, "horizon": horizon, "available": len(values),
                      "median_percentage_change": median("percentage_change"),
                      "median_high_delta": median("high_delta"),
                      "median_low_delta": median("low_delta")})

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from statistics import mean, median
 from typing import Iterable
+import math
 
 EVALUATION_VERSION = "1.0.0"
 HORIZONS = ("5m", "15m", "30m", "60m")
@@ -127,12 +128,23 @@ def data_quality(market_states: list[dict], outcomes: list[dict]) -> dict:
     for row in outcomes:
         symbol = str(row.get("symbol") or "DESCONHECIDO")
         by_symbol[symbol] = by_symbol.get(symbol, 0) + 1
-    return {"market_states_without_expected_outcome": len(expected - set(actual)),
+    missing_pairs = expected - set(actual)
+    states_with_missing = {state_id for state_id, _ in missing_pairs}
+    def invalid_start_price(row: dict) -> bool:
+        value = row.get("start_price")
+        try:
+            return value is None or not math.isfinite(float(value)) or float(value) <= 0
+        except (TypeError, ValueError):
+            return True
+    return {"missing_expected_outcomes": len(missing_pairs),
+            "market_states_with_missing_outcome": len(states_with_missing),
+            # Nome legado agora mantém semântica correta: conta MarketStates.
+            "market_states_without_expected_outcome": len(states_with_missing),
             "orphan_outcomes": sum(row.get("market_state_id") not in state_ids for row in outcomes),
             "duplicate_market_state_horizon": len(actual) - len(set(actual)),
             "available_without_future_price": sum(row.get("future_price") is None for row in available),
             "available_without_percentage_change": sum(row.get("percentage_change") is None for row in available),
-            "start_price_invalid_or_null": sum(row.get("start_price") is None for row in outcomes),
+            "start_price_invalid_or_null": sum(invalid_start_price(row) for row in outcomes),
             "unknown_statuses": sorted({str(row.get("status")) for row in outcomes if row.get("status") not in KNOWN_STATUSES}),
             "outcomes_by_symbol": by_symbol,
             "first_cutoff": min((row.get("cutoff_at_utc") for row in market_states), default=None),

@@ -92,6 +92,19 @@ class EvaluationAnalyticsTests(unittest.TestCase):
         self.assertEqual(quality["duplicate_market_state_horizon"], 1)
         self.assertEqual(quality["available_without_future_price"], 1)
         self.assertIn("ESTRANHO", quality["unknown_statuses"])
+        self.assertEqual(quality["missing_expected_outcomes"], 3)
+        self.assertEqual(quality["market_states_with_missing_outcome"], 1)
+
+    def test_start_price_invalid_when_none_non_numeric_or_non_positive(self):
+        states = [{"id": 1, "symbol": "WIN", "cutoff_at_utc": "2026-01-02T13:00:00+00:00"}]
+        outcomes = [
+            {"market_state_id": 1, "horizon_code": "5m", "status": "PENDENTE", "start_price": None},
+            {"market_state_id": 1, "horizon_code": "15m", "status": "PENDENTE", "start_price": "invalido"},
+            {"market_state_id": 1, "horizon_code": "30m", "status": "PENDENTE", "start_price": 0},
+            {"market_state_id": 1, "horizon_code": "60m", "status": "PENDENTE", "start_price": -1},
+            {"market_state_id": 1, "horizon_code": "5m", "status": "PENDENTE", "start_price": 100},
+        ]
+        self.assertEqual(data_quality(states, outcomes)["start_price_invalid_or_null"], 4)
 
     def test_temporal_grouping_uses_sao_paulo_for_display_only(self):
         path = self._db()
@@ -101,8 +114,14 @@ class EvaluationAnalyticsTests(unittest.TestCase):
                         "future_price": 100, "future_high": 101, "future_low": 99,
                         "high_delta": 1, "low_delta": -1, "absolute_change": 0,
                         "percentage_change": 0, "candles_observed": 5, "status": "DISPONIVEL"}, path)
+        upsert_outcome({"market_state_id": state_id, "symbol": "WIN", "horizon_code": "60m",
+                        "target_at_utc": "2026-01-02T13:00:00+00:00", "start_price": 100,
+                        "future_price": 102, "future_high": 103, "future_low": 99,
+                        "high_delta": 3, "low_delta": -1, "absolute_change": 2,
+                        "percentage_change": .02, "candles_observed": 60, "status": "DISPONIVEL"}, path)
         report = build_evaluation_report(path, "WIN")
-        self.assertEqual(report["temporal"][0]["hour"], "09h")
+        self.assertEqual({row["horizon"] for row in report["temporal"]}, {"5m", "60m"})
+        self.assertEqual({row["available"] for row in report["temporal"]}, {1})
         try: Path(path).unlink(missing_ok=True)
         except OSError: pass
 
