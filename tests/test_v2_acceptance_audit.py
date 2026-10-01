@@ -48,6 +48,7 @@ class V2AcceptanceAuditTests(unittest.TestCase):
         self.assertTrue(f["MARKET_STATE_SNAPSHOT_ENABLED"])
         self.assertTrue(f["OUTCOME_TRACKING_ENABLED"])
         self.assertTrue(f["EVALUATION_ENGINE_ENABLED"])
+        self.assertFalse(f["CALIBRATION_ENABLED"])
         self.assertFalse(f["AUTO_DECISION_ENGINE"])
         self.assertFalse(f["MODEL_BENCHMARK_ENABLED"])
 

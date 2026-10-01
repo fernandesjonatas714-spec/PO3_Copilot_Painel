@@ -67,6 +67,26 @@ def migrate(db_path: str | Path) -> str:
           UNIQUE(market_state_id,horizon_code)
         );
         CREATE INDEX IF NOT EXISTS idx_outcomes_state ON observed_outcomes(market_state_id);
+        CREATE TABLE IF NOT EXISTS decision_observations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          analysis_run_id INTEGER NOT NULL UNIQUE,
+          market_state_id INTEGER,
+          symbol TEXT NOT NULL,
+          decision_state_hash TEXT NOT NULL,
+          link_status TEXT NOT NULL,
+          decisions_json TEXT NOT NULL,
+          gate_status TEXT,
+          consensus_status TEXT,
+          model_configured TEXT,
+          model_used TEXT,
+          fallback_used INTEGER NOT NULL DEFAULT 0,
+          repair_used INTEGER NOT NULL DEFAULT 0,
+          decision_engine_version TEXT,
+          prompt_version TEXT,
+          schema_version TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_decision_observations_market_state ON decision_observations(market_state_id);
         CREATE TABLE IF NOT EXISTS collector_runtime_status (
           symbol TEXT PRIMARY KEY, status TEXT NOT NULL, feed_lag_seconds REAL,
           last_closed_at_utc TEXT, last_tick_at_utc TEXT, detail TEXT, updated_at TEXT NOT NULL
