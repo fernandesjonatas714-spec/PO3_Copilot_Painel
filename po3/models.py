@@ -35,7 +35,7 @@ class PO3Event:
 class MarketSnapshot:
     symbol: str
     as_of: datetime
-    last_price: float
+    last_price: float | None
     connected: bool
     source: str
     bars: dict[str, list[dict]] = field(default_factory=dict)

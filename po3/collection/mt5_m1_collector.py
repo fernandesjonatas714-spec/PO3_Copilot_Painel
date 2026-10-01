@@ -108,14 +108,18 @@ def collect_once(config:CollectorConfig,mt5:Any,owner_id:str|None=None,now_utc:d
                 "freshness":freshness.status if freshness else None,
                 "feed_lag_seconds":freshness.feed_lag_seconds if freshness else None}
     finally:release_lease(config.lease_name,config.symbol,owner,config.db_path)
-def _default_snapshot_provider(config,cutoff):
-    from po3.mt5_reader import read_snapshot
-    return read_snapshot(config.terminal_path or "",config.symbol),{}
+def _default_snapshot_provider(config,cutoff,alignment_detector):
+    from po3.mt5_reader import read_snapshot_at_cutoff
+    if not alignment_detector.usable:
+        raise RuntimeError("MT5_ALIGNMENT_UNAVAILABLE: snapshot causal sem alinhamento validado")
+    return read_snapshot_at_cutoff(config.terminal_path or "",config.symbol,cutoff,
+                                   normalize_timestamp=alignment_detector.normalize),{}
 def run_worker(config:CollectorConfig,mt5:Any,stop_event:Event|None=None,max_cycles:int|None=None,snapshot_provider:Callable|None=None)->None:
     migrate(config.db_path); owner=acquire_lease(config.lease_name,config.symbol,config.db_path,ttl_seconds=config.lease_ttl_seconds)
     if not owner:raise RuntimeError("Outro coletor possui o lease")
-    stop_event=stop_event or Event(); cycles=0; provider=snapshot_provider or (lambda cutoff:_default_snapshot_provider(config,cutoff))
+    stop_event=stop_event or Event(); cycles=0
     alignment_detector=Mt5TimeAlignmentDetector()
+    provider=snapshot_provider or (lambda cutoff:_default_snapshot_provider(config,cutoff,alignment_detector))
     existing=list_states(config.db_path,config.symbol)
     last_slot=_slot(datetime.fromisoformat(existing[-1]["cutoff_at_utc"]) if existing else datetime(1970,1,1,tzinfo=timezone.utc),config.state_interval_minutes) if existing else None
     try:

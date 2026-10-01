@@ -105,6 +105,17 @@ Para Outcome 5m, com cutoff 10:00 e target 10:05, o intervalo observado e
 sao calculados somente nesse conjunto. A barra aberta as 10:05 e excluida.
 
 
+## Snapshot causal do MarketState
+
+O worker usa o provider causal padrão com o mesmo normalizador de timestamp do
+coletor. O snapshot é construído no cutoff, não a partir de um tick posterior.
+Para M1, M5, M15 e D1, uma barra só entra quando seu fechamento é menor ou
+igual ao cutoff; a barra em formação e qualquer barra futura são excluídas.
+Níveis, zonas e macro são recalculados depois desse corte usando somente as
+séries válidas. `preco_atual` significa o fechamento da última barra M1
+completamente conhecida no cutoff. `start_price` permanece um campo separado e
+é exclusivamente o fechamento da barra M1 exata em `cutoff - 1 minuto`.
+
 ## Alinhamento temporal MT5
 
 O coletor separa o timestamp cru do MT5 do timestamp UTC canonico. O detector
