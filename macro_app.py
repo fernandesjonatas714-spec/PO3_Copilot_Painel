@@ -553,6 +553,18 @@ def render_local_chat(snapshot) -> None:
             st.rerun()
 
 
+
+def render_collection_status(symbol: str) -> None:
+    """Exibe status persistido; a interface nunca inicia coleta."""
+    from po3.storage.market_repository import collection_status
+    from po3.v2_config import AUTO_DATA_COLLECTION
+    status = collection_status(symbol, os.path.join(os.path.dirname(__file__), "data", "po3_learning.sqlite"))
+    label = "Ativa" if AUTO_DATA_COLLECTION and status.get("status") == "ATIVA" else ("Erro" if status.get("status") == "ERRO" else "Pausada")
+    with st.container(border=True):
+        st.caption("Coleta histórica")
+        st.write(label)
+        st.caption(f"Último M1: {status.get('ultimo_m1') or '—'} · Último MarketState: {status.get('ultimo_market_state') or '—'} · Outcomes pendentes: {status.get('outcomes_pendentes', 0)}")
+
 with st.sidebar:
     st.markdown('<div class="brand"><div class="brand-mark">P3</div><div><div class="brand-title">PO3 Copilot B3</div><div class="brand-sub">Painel macro operacional</div></div></div>', unsafe_allow_html=True)
     st.markdown("**Configuração de leitura**")
@@ -574,6 +586,8 @@ def live():
         st.error(str(exc)); st.info("Abra o MT5, mantenha o WIN visível e confirme que o terminal está conectado.")
 
 live()
+if "latest_snapshot" in st.session_state:
+    render_collection_status(symbol)
 if "latest_snapshot" in st.session_state:
     render_local_chat(st.session_state["latest_snapshot"])
 

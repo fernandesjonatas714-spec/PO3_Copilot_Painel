@@ -87,3 +87,18 @@ def get_outcomes(db_path: str | Path, state_id: int | None = None) -> list[dict]
         q="SELECT * FROM observed_outcomes"; args=()
         if state_id is not None: q+=" WHERE market_state_id=?"; args=(state_id,)
         return [dict(r) for r in c.execute(q+" ORDER BY horizon_code",args).fetchall()]
+
+def collection_status(symbol: str, db_path: str | Path) -> dict:
+    """Retorna somente status persistido para a UI, sem coletar nem chamar IA."""
+    try:
+        with connect(db_path) as c:
+            lease = c.execute("SELECT heartbeat_at,expires_at FROM collector_leases WHERE collector_name=? AND symbol=?", ("po3-m1", symbol)).fetchone()
+            bar = c.execute("SELECT MAX(timestamp_utc) AS ts FROM market_bars_m1 WHERE symbol=?", (symbol,)).fetchone()
+            state = c.execute("SELECT MAX(cutoff_at_utc) AS ts FROM market_states WHERE symbol=?", (symbol,)).fetchone()
+            pending = c.execute("SELECT COUNT(*) AS n FROM observed_outcomes WHERE status IN ('PENDENTE','SEM_DADO') AND symbol=?", (symbol,)).fetchone()
+            now = utc_now()
+            active = bool(lease and lease["expires_at"] > iso(now))
+            return {"status": "ATIVA" if active else "PAUSADA", "ultimo_m1": bar["ts"] if bar else None,
+                    "ultimo_market_state": state["ts"] if state else None, "outcomes_pendentes": int(pending["n"] if pending else 0)}
+    except Exception as exc:
+        return {"status": "ERRO", "erro": str(exc), "ultimo_m1": None, "ultimo_market_state": None, "outcomes_pendentes": 0}
