@@ -116,6 +116,25 @@ def list_states(db_path: str | Path, symbol: str | None = None) -> list[dict]:
         q += " ORDER BY cutoff_at_utc"
         return [dict(r) for r in c.execute(q,args).fetchall()]
 
+def select_v2_evaluation_data(db_path: str | Path, symbol: str | None = None) -> tuple[list[dict], list[dict]]:
+    """Lê exclusivamente as tabelas factuais V2, sem migrar ou escrever."""
+    path = Path(db_path)
+    if not path.exists():
+        return [], []
+    uri = f"file:{path.resolve().as_posix()}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        if symbol:
+            states = conn.execute("SELECT * FROM market_states WHERE symbol=? ORDER BY cutoff_at_utc", (symbol,)).fetchall()
+            outcomes = conn.execute("SELECT * FROM observed_outcomes WHERE symbol=? ORDER BY market_state_id,horizon_code", (symbol,)).fetchall()
+        else:
+            states = conn.execute("SELECT * FROM market_states ORDER BY cutoff_at_utc").fetchall()
+            outcomes = conn.execute("SELECT * FROM observed_outcomes ORDER BY market_state_id,horizon_code").fetchall()
+        return [dict(row) for row in states], [dict(row) for row in outcomes]
+    finally:
+        conn.close()
+
 def upsert_outcome(outcome: Mapping, db_path: str | Path) -> None:
     now=iso(utc_now()); vals={**outcome,"schema_version":CURRENT_SCHEMA_VERSION,"updated_at":now,"created_at":outcome.get("created_at",now)}
     cols=["market_state_id","symbol","horizon_code","target_at_utc","observed_at_utc","start_price","future_price","future_high","future_low","high_delta","low_delta","absolute_change","percentage_change","candles_observed","status","schema_version","created_at","updated_at"]
