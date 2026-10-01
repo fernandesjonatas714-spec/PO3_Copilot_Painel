@@ -120,7 +120,23 @@ def upsert_outcome(outcome: Mapping, db_path: str | Path) -> None:
     now=iso(utc_now()); vals={**outcome,"schema_version":CURRENT_SCHEMA_VERSION,"updated_at":now,"created_at":outcome.get("created_at",now)}
     cols=["market_state_id","symbol","horizon_code","target_at_utc","observed_at_utc","start_price","future_price","future_high","future_low","high_delta","low_delta","absolute_change","percentage_change","candles_observed","status","schema_version","created_at","updated_at"]
     with connect(db_path) as c:
-        c.execute(f"INSERT INTO observed_outcomes ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)}) ON CONFLICT(market_state_id,horizon_code) DO UPDATE SET "+','.join(f"{x}=excluded.{x}" for x in cols[4:]), tuple(vals.get(x) for x in cols))
+        c.execute(f"""INSERT INTO observed_outcomes ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})
+          ON CONFLICT(market_state_id,horizon_code) DO UPDATE SET
+          target_at_utc=CASE WHEN observed_outcomes.status='DISPONIVEL' THEN observed_outcomes.target_at_utc ELSE excluded.target_at_utc END,
+          observed_at_utc=CASE WHEN observed_outcomes.status='DISPONIVEL' THEN observed_outcomes.observed_at_utc ELSE excluded.observed_at_utc END,
+          start_price=CASE WHEN observed_outcomes.status='DISPONIVEL' THEN observed_outcomes.start_price ELSE excluded.start_price END,
+          future_price=CASE WHEN observed_outcomes.status='DISPONIVEL' THEN observed_outcomes.future_price ELSE excluded.future_price END,
+          future_high=CASE WHEN observed_outcomes.status='DISPONIVEL' THEN observed_outcomes.future_high ELSE excluded.future_high END,
+          future_low=CASE WHEN observed_outcomes.status='DISPONIVEL' THEN observed_outcomes.future_low ELSE excluded.future_low END,
+          high_delta=CASE WHEN observed_outcomes.status='DISPONIVEL' THEN observed_outcomes.high_delta ELSE excluded.high_delta END,
+          low_delta=CASE WHEN observed_outcomes.status='DISPONIVEL' THEN observed_outcomes.low_delta ELSE excluded.low_delta END,
+          absolute_change=CASE WHEN observed_outcomes.status='DISPONIVEL' THEN observed_outcomes.absolute_change ELSE excluded.absolute_change END,
+          percentage_change=CASE WHEN observed_outcomes.status='DISPONIVEL' THEN observed_outcomes.percentage_change ELSE excluded.percentage_change END,
+          candles_observed=CASE WHEN observed_outcomes.status='DISPONIVEL' THEN observed_outcomes.candles_observed ELSE excluded.candles_observed END,
+          status=CASE WHEN observed_outcomes.status='DISPONIVEL' THEN observed_outcomes.status ELSE excluded.status END,
+          schema_version=CASE WHEN observed_outcomes.status='DISPONIVEL' THEN observed_outcomes.schema_version ELSE excluded.schema_version END,
+          created_at=observed_outcomes.created_at,
+          updated_at=CASE WHEN observed_outcomes.status='DISPONIVEL' THEN observed_outcomes.updated_at ELSE excluded.updated_at END""", tuple(vals.get(x) for x in cols))
 
 def get_outcomes(db_path: str | Path, state_id: int | None = None) -> list[dict]:
     with connect(db_path) as c:
@@ -135,12 +151,14 @@ def collection_status(symbol: str, db_path: str | Path) -> dict:
             lease = c.execute("SELECT heartbeat_at,expires_at FROM collector_leases WHERE collector_name=? AND symbol=?", ("po3-m1", symbol)).fetchone()
             bar = c.execute("SELECT MAX(timestamp_utc) AS ts FROM market_bars_m1 WHERE symbol=?", (symbol,)).fetchone()
             state = c.execute("SELECT MAX(cutoff_at_utc) AS ts FROM market_states WHERE symbol=?", (symbol,)).fetchone()
-            pending = c.execute("SELECT COUNT(*) AS n FROM observed_outcomes WHERE status IN ('PENDENTE','SEM_DADO') AND symbol=?", (symbol,)).fetchone()
+            pending = c.execute("SELECT COUNT(*) AS n FROM observed_outcomes WHERE status IN ('PENDENTE','PENDENTE_DADOS') AND symbol=?", (symbol,)).fetchone()
+            start_unavailable = c.execute("SELECT COUNT(*) AS n FROM observed_outcomes WHERE status='START_PRICE_INDISPONIVEL' AND symbol=?", (symbol,)).fetchone()
             now = utc_now()
             active = bool(lease and lease["expires_at"] > iso(now))
             runtime = c.execute("SELECT * FROM collector_runtime_status WHERE symbol=?", (symbol,)).fetchone()
             return {"status": "ATIVA" if active else "PAUSADA", "ultimo_m1": bar["ts"] if bar else None,
                     "ultimo_market_state": state["ts"] if state else None, "outcomes_pendentes": int(pending["n"] if pending else 0),
+                    "outcomes_start_price_indisponivel": int(start_unavailable["n"] if start_unavailable else 0),
                     "feed_status": runtime["status"] if runtime else "SEM_DADOS",
                     "feed_lag_seconds": runtime["feed_lag_seconds"] if runtime else None,
                     "last_closed_at_utc": runtime["last_closed_at_utc"] if runtime else None,

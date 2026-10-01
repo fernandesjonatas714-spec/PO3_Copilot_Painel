@@ -10,7 +10,7 @@ from unittest.mock import patch
 from po3.collection.mt5_m1_collector import CollectorConfig, _default_snapshot_provider
 from po3.collection.time_alignment import Mt5TimeAlignmentDetector
 from po3.market_state_store import freeze_market_state
-from po3.mt5_reader import read_snapshot_at_cutoff
+from po3.mt5_reader import read_snapshot_at_cutoff, _CausalRatesProxy
 from po3.storage.market_repository import list_states
 
 
@@ -29,9 +29,11 @@ class CausalFakeMT5:
         self.cutoff = cutoff
         self._periods = {1: 60, 5: 300, 15: 900, 30: 1800, 60: 3600,
                          240: 14400, 1440: 86400, 10080: 604800, 43200: 31 * 86400}
+        self.initialize_calls = 0
+        self.shutdown_calls = 0
 
-    def initialize(self, *args, **kwargs): return True
-    def shutdown(self): return None
+    def initialize(self, *args, **kwargs): self.initialize_calls += 1; return True
+    def shutdown(self): self.shutdown_calls += 1
     def terminal_info(self): return SimpleNamespace(connected=True)
     def account_info(self): return None
     def version(self): return (1, 0, 0)
@@ -98,6 +100,47 @@ class CausalSnapshotTests(unittest.TestCase):
             self.assertEqual(snapshot.bars["M1"][-1]["time"], self.cutoff - timedelta(minutes=1))
         finally:
             Path(terminal).unlink(missing_ok=True)
+
+    def test_external_mt5_session_is_not_initialized_or_shutdown(self):
+        with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as handle:
+            terminal = handle.name
+        try:
+            snapshot = read_snapshot_at_cutoff(
+                terminal, "WIN", self.cutoff,
+                normalize_timestamp=self.detector.normalize,
+                mt5_session=self.fake,
+                manage_connection=False,
+            )
+            self.assertEqual(snapshot.source, "MT5 causal")
+            self.assertEqual(self.fake.initialize_calls, 0)
+            self.assertEqual(self.fake.shutdown_calls, 0)
+        finally:
+            Path(terminal).unlink(missing_ok=True)
+
+    def test_macro_proxy_uses_most_recent_closed_window(self):
+        class RecentFake:
+            TIMEFRAME_M15 = 15
+            def copy_rates_from_pos(self, symbol, timeframe, start_pos, count):
+                rows = []
+                # 200 closed bars plus one forming bar at the cutoff. The
+                # recent block has distinctly larger closes than old history.
+                for index in range(200, -1, -1):
+                    opened = self.cutoff - timedelta(minutes=15 * index)
+                    value = 1000.0 + (200 - index)
+                    if opened == self.cutoff:
+                        value = 999999.0
+                    rows.append({"time": int(opened.timestamp()) - 10800,
+                             "open": value, "high": value + 1,
+                                 "low": value - 1, "close": value, "tick_volume": 1})
+                return rows
+
+        fake = RecentFake()
+        fake.cutoff = self.cutoff
+        proxy = _CausalRatesProxy(fake, "WIN", self.cutoff, self.detector.normalize)
+        selected = proxy.copy_rates_from_pos("WIN", fake.TIMEFRAME_M15, 1, 100)
+        self.assertEqual(len(selected), 100)
+        self.assertEqual(selected[0]["close"], 1100.0)
+        self.assertEqual(selected[-1]["close"], 1199.0)
 
     def test_freeze_preserves_causal_preco_atual_separate_from_start_price(self):
         with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as handle:

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .levels import build_active_zones, build_context_levels
+from .levels import build_active_zones, build_context_levels, build_daily_zones
 from .models import MarketSnapshot, PO3Event
 from .macro import build_macro
 
@@ -83,19 +83,21 @@ class _CausalRatesProxy:
                                timeframe_seconds=_tf_seconds(self._mt5, timeframe), cutoff_at_utc=self._cutoff)
         # build_macro historically pede start_pos=1 para ignorar a barra atual;
         # como a proxy já removeu barras em formação, manter a remoção é seguro.
-        selected = bars[start_pos:start_pos + count]
+        selected = bars[-count:] if count else bars
         return [{"time": int(datetime.fromisoformat(str(x["time"]).replace("Z", "+00:00")).timestamp()),
                  "close": x["close"], "open": x["open"], "high": x["high"], "low": x["low"]} for x in selected]
 
 
-def read_snapshot_at_cutoff(terminal_path: str, symbol: str, cutoff_at_utc: datetime, *, normalize_timestamp) -> MarketSnapshot:
+def read_snapshot_at_cutoff(terminal_path: str, symbol: str, cutoff_at_utc: datetime, *, normalize_timestamp,
+                            mt5_session=None, manage_connection: bool = True) -> MarketSnapshot:
     """Captura somente o que já era conhecido no cutoff, sem tick posterior."""
-    mt5 = _load_package()
+    mt5 = mt5_session or _load_package()
     terminal = Path(terminal_path)
     if not terminal.is_file():
         raise MT5ReadError(f"Terminal nao encontrado: {terminal}")
     cutoff = cutoff_at_utc.astimezone(timezone.utc)
-    if not mt5.initialize(str(terminal), timeout=8_000):
+    owns_connection = mt5_session is None and manage_connection
+    if owns_connection and not mt5.initialize(str(terminal), timeout=8_000):
         raise MT5ReadError(f"Falha ao conectar ao MT5: {mt5.last_error()}")
     try:
         info = mt5.terminal_info()
@@ -131,7 +133,8 @@ def read_snapshot_at_cutoff(terminal_path: str, symbol: str, cutoff_at_utc: date
             events=[PO3Event(cutoff, "Leitura congelada", "Somente dados conhecidos no cutoff.")],
             notes=["Snapshot causal; sem tick posterior ao cutoff."], account={}, macro=macro)
     finally:
-        mt5.shutdown()
+        if owns_connection:
+            mt5.shutdown()
 
 
 def read_snapshot(terminal_path: str, symbol: str) -> MarketSnapshot:

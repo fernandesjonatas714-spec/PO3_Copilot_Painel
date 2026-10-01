@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import os
 from datetime import datetime, timezone, timedelta
 from types import SimpleNamespace
 from pathlib import Path
@@ -69,6 +70,21 @@ class V2AcceptanceAuditTests(unittest.TestCase):
     def test_run_worker_stop_event(self):
         stop=Event(); stop.set()
         run_worker(CollectorConfig("WIN",str(self.path)), FakeMT5([]), stop, max_cycles=1)
+
+    def test_worker_stop_file_releases_lease(self):
+        stop_path = self.path.with_suffix(".stop")
+        stop_path.write_text("stop\n", encoding="ascii")
+        old = os.environ.get("PO3_WORKER_STOP_FILE")
+        os.environ["PO3_WORKER_STOP_FILE"] = str(stop_path)
+        try:
+            run_worker(CollectorConfig("WIN", str(self.path)), FakeMT5([]), max_cycles=2)
+            import sqlite3
+            with sqlite3.connect(self.path) as conn:
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM collector_leases").fetchone()[0], 0)
+        finally:
+            if old is None: os.environ.pop("PO3_WORKER_STOP_FILE", None)
+            else: os.environ["PO3_WORKER_STOP_FILE"] = old
+            stop_path.unlink(missing_ok=True)
 
 if __name__ == "__main__":
     unittest.main()
