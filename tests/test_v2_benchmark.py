@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 
 from po3.benchmark import benchmark_report
+from po3.evaluation_engine import sample_band
+from po3.v2_config import flags
 from po3.storage.migrations import migrate
 
 
@@ -129,6 +131,62 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(report["data_quality"]["missing_model_used"], 1)
         self.assertEqual(report["data_quality"]["unknown_gate_status"], 1)
         self.assertEqual(report["data_quality"]["unknown_consensus_status"], 1)
+
+    def test_fixed_gate_and_consensus_categories_include_unknown_and_zeroes(self):
+        self.add(gate="DESCONHECIDO", consensus="DESCONHECIDO")
+        report = benchmark_report(self.path)
+        self.assertEqual(set(report["gate_distribution"]), {"VALIDO", "REVISAO", "BLOQUEADO", "OUTROS_DESCONHECIDOS"})
+        self.assertEqual(set(report["consensus_distribution"]), {"CONSENSO", "DIVERGENCIA", "NAO_EXECUTADA", "OUTROS_DESCONHECIDOS"})
+        self.assertEqual(report["gate_distribution"]["OUTROS_DESCONHECIDOS"]["count"], 1)
+        self.assertEqual(report["gate_distribution"]["VALIDO"]["count"], 0)
+        self.assertEqual(report["consensus_distribution"]["OUTROS_DESCONHECIDOS"]["count"], 1)
+        self.assertEqual(report["consensus_distribution"]["CONSENSO"]["count"], 0)
+
+    def test_null_gates_do_not_count_as_agreement(self):
+        self.add(digest="same", gate=None)
+        self.add(digest="same", gate=None)
+        stability = benchmark_report(self.path)["stability"]
+        self.assertEqual(stability["gate_agreement"]["eligible_groups"], 0)
+        self.assertIsNone(stability["gate_agreement"]["agreement_rate"])
+
+    def test_invalid_confidence_does_not_count_as_agreement(self):
+        invalid = self.decisions(confidence="INVALIDA")
+        self.add(digest="same", decisions=invalid)
+        self.add(digest="same", decisions=invalid)
+        item = benchmark_report(self.path)["stability"]["confidence_agreement_by_decision"]["regime_macro"]
+        self.assertEqual(item["eligible_groups"], 0)
+        self.assertIsNone(item["agreement_rate"])
+
+    def test_identical_executions_count_as_full_agreement(self):
+        self.add(digest="same")
+        self.add(digest="same")
+        stability = benchmark_report(self.path)["stability"]
+        self.assertEqual(stability["exact_full_decision_agreement_count"], 1)
+        self.assertEqual(stability["exact_full_decision_agreement_rate"], 1.0)
+
+    def test_media_and_baixa_are_preserved_in_distribution(self):
+        self.add(decisions=self.decisions(confidence="MEDIA"))
+        self.add(digest="baixa", decisions=self.decisions(confidence="BAIXA"))
+        distribution = benchmark_report(self.path)["decisions"]["regime_macro"]["confidence"]
+        self.assertEqual(distribution["MEDIA"]["count"], 1)
+        self.assertEqual(distribution["BAIXA"]["count"], 1)
+
+    def test_sample_band_boundaries(self):
+        expected = {29: "INSUFICIENTE", 30: "PRELIMINAR", 99: "PRELIMINAR",
+                    100: "UTIL", 199: "UTIL", 200: "ROBUSTA"}
+        for size, band in expected.items():
+            self.assertEqual(sample_band(size), band)
+
+    def test_repeated_same_model_preserves_all_cross_model_observations(self):
+        self.add(digest="same", model="modelo-a")
+        self.add(digest="same", model="modelo-a")
+        self.add(digest="same", model="modelo-b")
+        comparison = benchmark_report(self.path)["cross_model"]["comparisons"][0]
+        self.assertEqual(len(comparison["observations_by_model"]["modelo-a"]), 2)
+        self.assertEqual(len(comparison["observations_by_model"]["modelo-b"]), 1)
+
+    def test_model_benchmark_flag_remains_disabled(self):
+        self.assertFalse(flags()["MODEL_BENCHMARK_ENABLED"])
 
 
 if __name__ == "__main__":

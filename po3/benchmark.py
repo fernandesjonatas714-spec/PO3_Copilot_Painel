@@ -19,6 +19,8 @@ VALID_CONFIDENCES = {"ALTA", "MEDIA", "BAIXA"}
 VALID_EVIDENCE = {"COMPLETAS", "PARCIAIS", "INSUFICIENTES", "CONFLITANTES"}
 VALID_GATES = {"VALIDO", "REVISAO", "BLOQUEADO"}
 VALID_CONSENSUS = {"CONSENSO", "DIVERGENCIA", "NAO_EXECUTADA"}
+GATE_CATEGORIES = ("VALIDO", "REVISAO", "BLOQUEADO", "OUTROS_DESCONHECIDOS")
+CONSENSUS_CATEGORIES = ("CONSENSO", "DIVERGENCIA", "NAO_EXECUTADA", "OUTROS_DESCONHECIDOS")
 
 
 def _json(value: Any, default: Any = None) -> Any:
@@ -35,6 +37,16 @@ def _rate(count: int, total: int) -> float | None:
 def _distribution(values: Iterable[str], total: int) -> dict[str, dict[str, float | int]]:
     counts = Counter(values)
     return {key: {"count": count, "rate": _rate(count, total)} for key, count in sorted(counts.items())}
+
+
+def _fixed_distribution(values: Iterable[Any], categories: tuple[str, ...]) -> dict[str, dict[str, float | int]]:
+    counts = {category: 0 for category in categories}
+    official = set(categories[:-1])
+    for value in values:
+        key = str(value).upper() if value not in (None, "") else categories[-1]
+        counts[key if key in official else categories[-1]] += 1
+    total = sum(counts.values())
+    return {key: {"count": count, "rate": _rate(count, total)} for key, count in counts.items()}
 
 
 def _read_observations(db_path: str | Path, symbol: str | None) -> list[dict]:
@@ -97,6 +109,7 @@ def _state_stability(rows: list[dict]) -> dict:
             groups[str(row["decision_state_hash"])].append(row)
     repeated = {digest: group for digest, group in groups.items() if len(group) >= 2}
     full = gate = 0
+    eligible_gate_groups = 0
     agreement: dict[str, list[bool]] = defaultdict(list)
     confidence: dict[str, list[bool]] = defaultdict(list)
     for group in repeated.values():
@@ -106,20 +119,30 @@ def _state_stability(rows: list[dict]) -> dict:
             maps.append({item.get("id_decisao"): item.get("decisao") for item in (parsed or []) if isinstance(item, dict)})
             confidence_maps.append({item.get("id_decisao"): item.get("confianca") for item in (parsed or []) if isinstance(item, dict)})
         full += int(len({tuple(mapping.get(key) for key in EXPECTED_DECISION_IDS) for mapping in maps}) == 1)
-        gate += int(len({row.get("gate_status") for row in group}) == 1)
+        gate_values = [str(row.get("gate_status") or "").upper() for row in group]
+        if all(value in VALID_GATES for value in gate_values):
+            eligible_gate_groups += 1
+            gate += int(len(set(gate_values)) == 1)
         for key in EXPECTED_DECISION_IDS:
             values = [mapping.get(key) for mapping in maps]
             agreement[key].append(len(set(values)) == 1)
-            values = [mapping.get(key) for mapping in confidence_maps]
-            confidence[key].append(len(set(values)) == 1)
+            values = [str(mapping.get(key) or "").upper() for mapping in confidence_maps]
+            if all(value in VALID_CONFIDENCES for value in values):
+                confidence[key].append(len(set(values)) == 1)
     count = len(repeated)
     return {"repeated_state_groups": count,
             "repeated_observations": sum(len(group) for group in repeated.values()),
             "exact_full_decision_agreement_count": full,
             "exact_full_decision_agreement_rate": _rate(full, count),
             "agreement_by_decision": {key: {"count": sum(values), "rate": _rate(sum(values), len(values))} for key, values in sorted(agreement.items())},
-            "gate_agreement_rate": _rate(gate, count),
-            "confidence_agreement_by_decision": {key: _rate(sum(values), len(values)) for key, values in sorted(confidence.items())}}
+            "gate_agreement": {"eligible_groups": eligible_gate_groups, "agreement_count": gate,
+                                "agreement_rate": _rate(gate, eligible_gate_groups)},
+            "gate_agreement_rate": _rate(gate, eligible_gate_groups),
+            "confidence_agreement_by_decision": {
+                key: {"eligible_groups": len(confidence.get(key, [])), "agreement_count": sum(confidence.get(key, [])),
+                      "agreement_rate": _rate(sum(confidence.get(key, [])), len(confidence.get(key, []))),
+                      "rate": _rate(sum(confidence.get(key, [])), len(confidence.get(key, [])))}
+                for key in EXPECTED_DECISION_IDS}}
 
 
 def _cross_model(rows: list[dict]) -> dict:
@@ -133,17 +156,22 @@ def _cross_model(rows: list[dict]) -> dict:
         models = sorted({str(row.get("model_used") or "DESCONHECIDO") for row in group})
         if len(models) < 2:
             continue
-        by_model = {}
+        by_model: dict[str, list[dict]] = defaultdict(list)
         maps = []
         for row in group:
             parsed, _ = _parse_row(row)
             mapping = {item.get("id_decisao"): item.get("decisao") for item in (parsed or []) if isinstance(item, dict)}
             maps.append(mapping)
-            by_model[str(row.get("model_used") or "DESCONHECIDO")] = mapping
+            by_model[str(row.get("model_used") or "DESCONHECIDO")].append({
+                "analysis_run_id": row.get("analysis_run_id"),
+                "decisions": mapping,
+            })
         for key in EXPECTED_DECISION_IDS:
             values = [mapping.get(key) for mapping in maps]
             agreement[key].append(len(set(values)) == 1)
-        comparisons.append({"state_hash": digest, "models": models, "decisions_by_model": by_model})
+        comparisons.append({"state_hash": digest, "models": models,
+                            "observations_by_model": dict(by_model),
+                            "decisions_by_model": dict(by_model)})
     return {"cross_model_state_groups": len(comparisons), "comparisons": comparisons,
             "per_decision_cross_model_agreement_rate": {key: _rate(sum(values), len(values)) for key, values in sorted(agreement.items())}}
 
@@ -180,8 +208,8 @@ def benchmark_report(db_path: str | Path, symbol: str | None = None, *, generate
             "generated_at_utc": (generated_at_utc or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(),
             "symbol": symbol, "total_observations": len(rows), "usable_observations": len(usable),
             "sample_band": sample_band(len(usable)), "models": _model_metrics(rows),
-            "gate_distribution": _distribution((str(row.get("gate_status") or "DESCONHECIDO") for row in usable), len(usable)),
-            "consensus_distribution": _distribution((str(row.get("consensus_status") or "DESCONHECIDO") for row in usable), len(usable)),
+            "gate_distribution": _fixed_distribution((row.get("gate_status") for row in usable), GATE_CATEGORIES),
+            "consensus_distribution": _fixed_distribution((row.get("consensus_status") for row in usable), CONSENSUS_CATEGORIES),
             "decisions": decisions_report, "stability": stability,
             "repeated_state_groups": stability["repeated_state_groups"],
             "repeated_observations": stability["repeated_observations"],
