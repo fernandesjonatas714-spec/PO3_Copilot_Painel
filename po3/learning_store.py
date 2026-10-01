@@ -58,6 +58,26 @@ def initialize(db_path: str | Path = DEFAULT_DB) -> Path:
             );
             CREATE INDEX IF NOT EXISTS idx_analysis_created_at ON analysis_runs(created_at);
             CREATE INDEX IF NOT EXISTS idx_outcomes_analysis_id ON outcomes(analysis_id);
+            CREATE TABLE IF NOT EXISTS decision_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                analysis_run_id INTEGER NOT NULL UNIQUE,
+                market_state_id INTEGER,
+                symbol TEXT NOT NULL,
+                decision_state_hash TEXT NOT NULL,
+                link_status TEXT NOT NULL,
+                decisions_json TEXT NOT NULL,
+                gate_status TEXT,
+                consensus_status TEXT,
+                model_configured TEXT,
+                model_used TEXT,
+                fallback_used INTEGER NOT NULL DEFAULT 0,
+                repair_used INTEGER NOT NULL DEFAULT 0,
+                decision_engine_version TEXT,
+                prompt_version TEXT,
+                schema_version TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_decision_observations_market_state ON decision_observations(market_state_id);
             CREATE TABLE IF NOT EXISTS ai_error_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at TEXT NOT NULL,
@@ -83,7 +103,14 @@ def save_analysis(snapshot: Any, context: dict, response: str, db_path: str | Pa
             (datetime.now().astimezone().isoformat(), getattr(snapshot, "symbol", ""),
              getattr(snapshot, "last_price", None), str(bias), str(response), _json(context), _json(snapshot)),
         )
-        return int(cursor.lastrowid)
+        analysis_id = int(cursor.lastrowid)
+    # A falha observacional nunca pode interromper a análise operacional.
+    try:
+        from po3.calibration import record_observation_for_analysis
+        record_observation_for_analysis(analysis_id, path)
+    except Exception:
+        pass
+    return analysis_id
 
 
 def record_ai_error(operation: str, error_type: str, message: str, recovery: str,
