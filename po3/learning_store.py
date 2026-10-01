@@ -118,3 +118,21 @@ def record_outcome(analysis_id: int, future_price: float | None, movement: float
             "INSERT INTO outcomes (analysis_id, observed_at, future_price, movement, observed_bias, notes) VALUES (?, ?, ?, ?, ?, ?)",
             (analysis_id, datetime.now().astimezone().isoformat(), future_price, movement, observed_bias, notes),
         )
+
+def recent_analyses(limit: int = 10, db_path: str | Path = DEFAULT_DB) -> list[dict[str, Any]]:
+    """Retorna um resumo local das análises, sem expor segredos."""
+    try:
+        path = initialize(db_path)
+        with sqlite3.connect(path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT id, created_at, symbol, price, bias, response, context_json FROM analysis_runs ORDER BY id DESC LIMIT ?", (max(1, min(int(limit), 100)),)).fetchall()
+        result=[]
+        for row in rows:
+            structured={}
+            try: structured=json.loads(row["context_json"]).get("_structured", {})
+            except (TypeError, ValueError, json.JSONDecodeError): pass
+            decisions={x.get("id_decisao"):x.get("decisao") for x in structured.get("decisoes",[]) if isinstance(x,dict)}
+            result.append({"id":row["id"],"data_hora":row["created_at"],"ativo":row["symbol"],"preco":row["price"],"vies":row["bias"],"regime_macro":decisions.get("regime_macro","—"),"contexto_tecnico":decisions.get("contexto_tecnico","—"),"contexto_operacional":decisions.get("contexto_operacional","—"),"status":structured.get("gate",{}).get("status","—"),"modelo":structured.get("modelo_utilizado","—"),"resposta":row["response"]})
+        return result
+    except (sqlite3.Error, OSError, ValueError):
+        return []

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import os
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -9,8 +10,10 @@ import re
 
 from po3.mt5_reader import MT5ReadError, read_snapshot
 from po3.external_data import fetch_official_calendar, fetch_daily_context, filter_relevant_events, get_next_high_impact_event
-from po3.ai_service import OpenRouterError, configured_model_name, send_message
-from po3.learning_store import record_ai_error, save_analysis
+from po3.ai_service import OpenRouterError, configured_model_name, send_message, send_message_detailed
+from po3.decision_engine import DecisionEngine
+from po3.decision_engine.narrative import generate_narrative
+from po3.learning_store import record_ai_error, recent_analyses, save_analysis
 
 DEFAULT_TERMINAL = r"C:\Program Files\Clear Investimentos MT5 Terminal\terminal64.exe"
 
@@ -148,8 +151,8 @@ def _json_safe(value, seen=None):
     return str(value)
 
 
-def _run_daily_analysis(snapshot):
-    context = fetch_daily_context()
+def _run_daily_analysis_legacy(snapshot, context=None):
+    context = context or fetch_daily_context()
     answer = send_message(
         "Faça uma análise diária limpa e objetiva para operar o WIN usando exclusivamente os dados JSON abaixo. "
         "Responda em português, sem apresentação sobre quem você é, sem repetir que a execução é manual, sem seção de limitações, "
@@ -184,6 +187,84 @@ def _run_daily_analysis(snapshot):
         ),
     )
     return answer, context
+
+
+def _decision_engine_enabled() -> bool:
+    return os.getenv("DECISION_ENGINE_ENABLED", "true").strip().lower() not in {"0", "false", "nao", "não", "off"}
+
+
+def _run_daily_analysis(snapshot):
+    context = fetch_daily_context()
+    if not _decision_engine_enabled():
+        return _run_daily_analysis_legacy(snapshot, context)
+    try:
+        def detailed(message):
+            return send_message_detailed(
+                message,
+                system_instruction="Responda exclusivamente em JSON válido, em português do Brasil, conforme o schema solicitado. Não invente dados e não produza narrativa.",
+            )
+        structured = DecisionEngine(detailed, configured_model_name()).run(snapshot, context)
+        if structured.decisions and not structured.error:
+            def narrative_call(message):
+                return send_message_detailed(message, system_instruction="Responda somente com os três blocos narrativos solicitados, sempre em português do Brasil. Não invente dados.")
+            narrative_result = generate_narrative(narrative_call, structured.state, structured.decisions, structured.gate, structured.consensus, structured.model_used)
+            structured.narrative = narrative_result["content"]
+            structured.model_used = narrative_result.get("model_used") or structured.model_used
+            structured.fallback_used = structured.fallback_used or bool(narrative_result.get("fallback_used"))
+            return structured.narrative, {**context, "_structured": structured.to_dict()}
+        answer, legacy_context = _run_daily_analysis_legacy(snapshot, {**context, "_structured": structured.to_dict()})
+        return answer, {**legacy_context, "_structured": structured.to_dict()}
+    except Exception as exc:
+        return _run_daily_analysis_legacy(snapshot, {**context, "_structured_error": type(exc).__name__})
+
+
+def _render_structured_summary(data: dict) -> None:
+    if not data:
+        return
+    gate = data.get("gate", {})
+    validation = data.get("validation", {})
+    decision_rows = {x.get("id_decisao"): x for x in data.get("decisoes", [])}
+    decisions = {key: row.get("decisao") for key, row in decision_rows.items()}
+    labels = {
+        "APETITE_A_RISCO": "Apetite a risco", "AVERSAO_A_RISCO": "Aversão a risco", "MISTO": "Misto",
+        "INDETERMINADO": "Indeterminado", "POSITIVO": "Positivo", "NEGATIVO": "Negativo", "NEUTRO": "Neutro",
+        "ALTISTA": "Altista", "BAIXISTA": "Baixista", "CONFLITANTE": "Conflitante",
+        "CONTEXTO_COMPRADOR": "Contexto comprador", "CONTEXTO_VENDEDOR": "Contexto vendedor",
+        "AGUARDAR": "Aguardar confirmação", "SEM_SETUP": "Sem setup válido",
+        "BLOQUEADO_POR_EVENTO": "Bloqueado por evento", "SIM": "Sim", "NAO": "Não", "NÃO": "Não",
+    }
+    def label(key):
+        return labels.get(str(decisions.get(key, "INDETERMINADO")), str(decisions.get(key, "Indisponível")))
+    with st.expander("Decisão estruturada", expanded=False):
+        cols = st.columns(3)
+        cols[0].metric("Regime macro", label("regime_macro"))
+        cols[1].metric("Contexto doméstico", label("contexto_domestico"))
+        cols[2].metric("Contexto técnico", label("contexto_tecnico"))
+        cols = st.columns(3)
+        cols[0].metric("Risco de evento", decisions.get("risco_evento", "—"))
+        cols[1].metric("Conflito de contexto", label("conflito_contexto"))
+        cols[2].metric("Contexto operacional", label("contexto_operacional"))
+        rank = {"BAIXA": 0, "MÉDIA": 1, "MEDIA": 1, "ALTA": 2}
+        confidences = [str(row.get("confianca", "BAIXA")).upper() for row in decision_rows.values()]
+        conservative = min(confidences, key=lambda value: rank.get(value, 0)) if confidences else "BAIXA"
+        confidence_label = {"ALTA": "Alta", "MÉDIA": "Média", "MEDIA": "Média", "BAIXA": "Baixa"}.get(conservative, "Baixa")
+        evidence = [str(row.get("status_evidencias", "INSUFICIENTES")).title() for row in decision_rows.values()]
+        evidence_label = ", ".join(sorted(set(evidence))) if evidence else "Indisponível"
+        data_label = str(validation.get("status", "INDISPONÍVEIS")).title()
+        st.caption(f"Confiança geral conservadora: {confidence_label}")
+        st.caption(f"Qualidade dos dados: {data_label} · Qualidade das evidências: {evidence_label}")
+        st.caption(f"Status do Decision Gate: {str(gate.get('status', 'BLOQUEADO')).title()}")
+        st.caption(f"Modelo realmente utilizado: {data.get('modelo_utilizado') or 'não disponível'}")
+        st.caption(f"Fallback utilizado: {'Sim' if data.get('fallback_utilizado') else 'Não'}")
+        consensus = data.get("consenso", {}).get("status")
+        if consensus and consensus != "NAO_EXECUTADA":
+            text = "consenso" if consensus == "CONSENSO" else "divergência — revisão recomendada"
+            second_model = data.get("segunda_modelo_utilizado") or "não disponível"
+            st.caption(f"Segunda análise: executada · modelo {second_model} · {text}")
+        else:
+            st.caption("Segunda análise: não acionada · consenso/divergência: não aplicável")
+        if data.get("reparo_json_utilizado"):
+            st.caption("Reparo controlado do JSON: utilizado uma vez")
 
 
 def _render_audio_button(text: str) -> None:
@@ -279,6 +360,7 @@ def render_panel(snapshot):
                 answer, context = _run_daily_analysis(snapshot)
                 analysis_id = save_analysis(snapshot, context, answer)
                 st.session_state["daily_analysis_answer"] = answer
+                st.session_state["daily_analysis_structured"] = context.get("_structured", {})
                 st.session_state["daily_analysis_id"] = analysis_id
                 st.session_state["daily_analysis_at"] = datetime.now().astimezone().strftime("%d/%m/%Y %H:%M:%S")
                 st.session_state["daily_analysis_sources"] = context.get("news", {}).get("statuses", [])
@@ -301,6 +383,7 @@ def render_panel(snapshot):
     if st.session_state.get("daily_analysis_answer"):
         st.markdown(f'<div class="notice" style="margin-top:.55rem"><b>Análise registrada em {st.session_state.get("daily_analysis_at", "—")}</b></div>', unsafe_allow_html=True)
         st.markdown(f'<div class="daily-analysis">{st.session_state["daily_analysis_answer"]}</div>', unsafe_allow_html=True)
+        _render_structured_summary(st.session_state.get("daily_analysis_structured", {}))
         _render_audio_button(st.session_state["daily_analysis_answer"])
         sources = st.session_state.get("daily_analysis_sources", [])
         if sources:
@@ -493,3 +576,13 @@ def live():
 live()
 if "latest_snapshot" in st.session_state:
     render_local_chat(st.session_state["latest_snapshot"])
+
+with st.expander("Histórico de análises", expanded=False):
+    history_rows = recent_analyses(20)
+    if history_rows:
+        st.dataframe([
+            {"Data/hora": x["data_hora"], "Ativo": x["ativo"], "Regime macro": x["regime_macro"], "Contexto técnico": x["contexto_tecnico"], "Contexto operacional": x["contexto_operacional"], "Status": x["status"], "Modelo": x["modelo"]}
+            for x in history_rows
+        ], hide_index=True, width="stretch")
+    else:
+        st.caption("Nenhuma análise registrada ainda.")
