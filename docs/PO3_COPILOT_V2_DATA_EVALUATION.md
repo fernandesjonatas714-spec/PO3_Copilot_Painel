@@ -1,0 +1,153 @@
+# PO3 Copilot V2 — dados, avaliação e calibração
+
+## Escopo
+
+Esta versão acrescenta uma camada separada para coletar M1 fechado, congelar
+`MarketState`, observar horizontes futuros e calcular métricas descritivas. Ela
+não substitui o fluxo V1, não altera prompts, indicadores MT5, OpenRouter ou a
+interface principal e não envia ordens.
+
+## Princípios de segurança
+
+- somente candles cujo fechamento já ocorreu entram no banco;
+- cada estado tem `cutoff_at_utc` e versão de schema/engine/prompt;
+- resultados futuros ficam em `observed_outcomes` e nunca entram no estado usado
+  para uma decisão histórica;
+- o lease impede dois coletores concorrentes para o mesmo símbolo;
+- respostas da IA e métricas são avaliação, não execução automática;
+- o fallback do OpenRouter continua limitado a modelos `:free`.
+
+## Banco e migração
+
+`po3.storage.migrations.migrate()` é idempotente e cria as tabelas `market_bars_m1`,
+`collector_leases`, `market_states`, `observed_outcomes` e `schema_migrations`.
+Antes de uma migração material, `backup_database()` valida a integridade SQLite
+e cria uma cópia datada. O banco local continua ignorado pelo Git.
+
+## Coleta
+
+`po3.collection.mt5_m1_collector` é um worker independente. Usa
+`copy_rates_from_pos(..., 1, ...)`, portanto exclui o candle em formação, grava
+UTC, aplica `UNIQUE(symbol,timestamp_utc)` e usa lease/heartbeat. A integração
+com o Streamlit permanece desligada por padrão para preservar a V1; o worker
+pode ser iniciado separadamente quando o terminal MT5 estiver conectado.
+
+## Estados, resultados e replay
+
+O coletor deve congelar um estado a cada fechamento alinhado de cinco minutos,
+com as barras e fontes disponíveis naquele corte. `po3.outcome_engine` calcula
+5, 15, 30 e 60 minutos e fechamento de sessão, com preço futuro, máxima/mínima,
+variação absoluta/percentual, MFE/MAE implícitos e status `DISPONIVEL`,
+`PENDENTE` ou `MERCADO_FECHADO`. `po3.replay_engine` remove explicitamente
+resultados/barras futuras antes de chamar a análise.
+
+## Avaliação e calibração
+
+`po3.evaluation_engine` produz taxa direcional descritiva e buckets de confiança.
+Não ajusta automaticamente prompts, pesos, modelos ou regras. Benchmark, drift,
+estabilidade e calibração devem ser executados offline e revisados antes de
+qualquer alteração de produção.
+
+## Operação recomendada
+
+1. Fazer backup do SQLite.
+2. Rodar a migração e validar `PRAGMA integrity_check`.
+3. Iniciar um único worker M1 por símbolo.
+4. Conferir quantidade de barras fechadas e leases.
+5. Rodar replay/avaliação em relatório separado.
+6. Revisar resultados; só então propor mudanças em uma nova branch.
+
+## Limitações atuais
+
+Dados históricos de notícias/calendário podem não existir para todos os cortes;
+nesse caso o estado deve marcar contexto parcial. A fonte factual primária dos
+preços continua sendo o MT5. Não há nesta camada qualquer chamada de ordem.
+
+
+## Gate de frescor e semântica dos outcomes
+
+Durante uma sessão ativa, um MarketState somente é criado quando o último
+candle M1 totalmente fechado está dentro de MT5_MAX_FEED_LAG_SECONDS
+(padrão: 120 segundos). O status MT5_DATA_STALE impede a criação silenciosa.
+Fora da sessão, a ausência de candle é registrada como
+SEM_NOVO_CANDLE_MERCADO_FECHADO, não como erro de feed.
+
+Como o MT5 identifica uma barra pelo horário de abertura, o cutoff é exclusivo para a barra aberta no cutoff, pois ela ainda pertence
+à janela futura. Assim, para cutoff 10:00 e target 10:05, o MarketState usa
+somente barras anteriores a 10:00; o Outcome usa 10:00, 10:01, 10:02, 10:03
+e 10:04. O preço futuro é o fechamento da barra aberta às
+10:04, que termina exatamente às 10:05; máximas e mínimas usam o mesmo
+intervalo. A barra 10:05 não entra no Outcome 5m.
+
+Antes de target_at, o status é PENDENTE. Depois do target, se ainda faltam
+barras factuais por atraso temporário, o status é PENDENTE_DADOS. SEM_DADO
+ou MERCADO_FECHADO somente indicam ausência factual confirmada, nunca um
+substituto inventado. O processor pode ser executado repetidamente: quando o
+feed se recupera, o mesmo registro passa a DISPONIVEL sem duplicação.
+
+
+## Convencao oficial de start_price (imutavel)
+
+Para qualquer MarketState, start_bar_open_time e sempre
+cutoff_at_utc menos 1 minuto. O campo start_price e exclusivamente o
+CLOSE da barra M1 aberta nesse horario exato. Para cutoff 10:00, usa-se o
+fechamento da barra 09:59.
+
+A barra aberta no cutoff (10:00) pertence somente a janela futura do Outcome.
+Nao se usa como fallback uma barra mais antiga, last_price, tick posterior ou
+o OPEN da barra do cutoff. Se a barra exata anterior nao existir, o estado e
+persistido com start_price_status=INDISPONIVEL e nenhum resultado causal e
+fabricado.
+
+Para Outcome 5m, com cutoff 10:00 e target 10:05, o intervalo observado e
+[10:00, 10:05): entram as barras abertas 10:00, 10:01, 10:02, 10:03 e
+10:04. future_price e o fechamento de 10:04; future_high e future_low
+sao calculados somente nesse conjunto. A barra aberta as 10:05 e excluida.
+
+
+## Snapshot causal do MarketState
+
+O worker usa o provider causal padrão com o mesmo normalizador de timestamp do
+coletor. O snapshot é construído no cutoff, não a partir de um tick posterior.
+Para M1, M5, M15 e D1, uma barra só entra quando seu fechamento é menor ou
+igual ao cutoff; a barra em formação e qualquer barra futura são excluídas.
+Níveis, zonas e macro são recalculados depois desse corte usando somente as
+séries válidas. `preco_atual` significa o fechamento da última barra M1
+completamente conhecida no cutoff. `start_price` permanece um campo separado e
+é exclusivamente o fechamento da barra M1 exata em `cutoff - 1 minuto`.
+
+## Alinhamento temporal MT5
+
+O coletor separa o timestamp cru do MT5 do timestamp UTC canonico. O detector
+faz duas ou mais observacoes do tick, valida liveness e estima o offset sem
+assumir America/Sao_Paulo ou qualquer valor fixo. O offset canonico e
+arredondado ao minuto mais proximo apenas para neutralizar jitter de segundos;
+o valor detectado e persistido para auditoria.
+
+Barras novas persistem source_timestamp_raw, timestamp_utc normalizado e
+time_offset_seconds. O freshness gate usa apenas o tick e as barras ja
+normalizados. Os estados de runtime distinguem feed_liveness_status de
+clock_alignment_status; offset detectado nao e classificado como feed stale.
+
+Na auditoria de 2026-10-01, o banco principal possuia 2.412 barras anteriores,
+sem MarketState ou outcome. Esses registros nao foram reescritos, pois nao
+havia metadata suficiente para provar o offset historico. Foi criado o backup
+data/po3_learning.backup-20261001T185144Z.sqlite antes da migracao. A partir da
+proxima coleta, somente barras com alinhamento validado recebem os campos de
+origem e UTC canonico.
+
+A validação anterior registrou uma origem inconsistente (cutoff 19:05 UTC,
+relato de close 18:59 UTC). O SQLite temporário dessa execução foi removido,
+portanto a origem daquele registro não pode ser reaberta retrospectivamente.
+Essa inconsistência não é mais aceita pela V2: a seleção agora consulta
+exclusivamente a barra canônica cujo horário de abertura é exatamente
+cutoff_at_utc menos 1 minuto; se ela não existir, o estado fica
+start_price_status=INDISPONIVEL, sem fallback.
+
+Na validação corretiva de 2026-10-01, no banco principal, o MarketState real
+teve cutoff 19:50 UTC, expected_start_bar e actual_start_bar 19:49 UTC,
+start_price 187970.0, com source_timestamp_raw e time_offset_seconds
+preenchidos. O Outcome 5m foi DISPONIVEL no target 19:55 UTC, usando somente as
+barras 19:50–19:54, com future_price 187935.0, future_high 188100.0 e
+future_low 187905.0. Após reinício, permaneceu um único MarketState para cada
+cutoff e um único Outcome 5m. Nenhuma chamada de LLM ou ordem foi realizada.

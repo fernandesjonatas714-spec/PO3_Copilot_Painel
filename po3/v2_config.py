@@ -1,0 +1,27 @@
+"""Feature flags da camada V2; coleta factual ativa e decisão automática bloqueada."""
+from __future__ import annotations
+import os
+
+def _enabled(name: str, default: bool = False) -> bool:
+    return os.getenv(name, "true" if default else "false").strip().lower() in {"1", "true", "sim", "yes"}
+
+AUTO_DATA_COLLECTION = _enabled("AUTO_DATA_COLLECTION", True)
+MARKET_STATE_SNAPSHOT_ENABLED = _enabled("MARKET_STATE_SNAPSHOT_ENABLED", True)
+OUTCOME_TRACKING_ENABLED = _enabled("OUTCOME_TRACKING_ENABLED", True)
+EVALUATION_ENGINE_ENABLED = _enabled("EVALUATION_ENGINE_ENABLED", True)
+AUTO_DECISION_ENGINE = _enabled("AUTO_DECISION_ENGINE", False)
+MODEL_BENCHMARK_ENABLED = _enabled("MODEL_BENCHMARK_ENABLED", False)
+CALIBRATED_CONFIDENCE_UI_ENABLED = _enabled("CALIBRATED_CONFIDENCE_UI_ENABLED", False)
+REPLAY_ENABLED = _enabled("REPLAY_ENABLED", False)
+
+def flags() -> dict:
+    return {
+        "AUTO_DATA_COLLECTION": AUTO_DATA_COLLECTION,
+        "MARKET_STATE_SNAPSHOT_ENABLED": MARKET_STATE_SNAPSHOT_ENABLED,
+        "OUTCOME_TRACKING_ENABLED": OUTCOME_TRACKING_ENABLED,
+        "EVALUATION_ENGINE_ENABLED": EVALUATION_ENGINE_ENABLED,
+        "AUTO_DECISION_ENGINE": AUTO_DECISION_ENGINE,
+        "MODEL_BENCHMARK_ENABLED": MODEL_BENCHMARK_ENABLED,
+        "CALIBRATED_CONFIDENCE_UI_ENABLED": CALIBRATED_CONFIDENCE_UI_ENABLED,
+        "REPLAY_ENABLED": REPLAY_ENABLED,
+    }

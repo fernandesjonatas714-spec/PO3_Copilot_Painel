@@ -87,7 +87,7 @@ def _corr(a, b):
     return max(-1.0, min(1.0, sum((u-mx)*(v-my) for u,v in zip(x,y)) / den**0.5))
 
 
-def build_macro(mt5, primary: str, timeframe) -> dict:
+def build_macro(mt5, primary: str, timeframe, *, as_of=None) -> dict:
     """Calcula um score condicional aos símbolos que o MT5 realmente fornece."""
     base_symbol = primary
     base = _series(mt5, base_symbol, timeframe)
@@ -142,4 +142,5 @@ def build_macro(mt5, primary: str, timeframe) -> dict:
             "factors": factors, "leaders": leaders, "leaders_missing": leaders_missing,
             "breadth": {"positive": positive, "negative": negative, "flat": flat, "total": len(leaders)},
             "market": {"return_short": short_return, "return_long": long_return, "volatility": volatility},
-            "missing": missing, "expected": {k:list(v[1]) for k,v in GROUPS.items()}, "timeframe": str(timeframe), "as_of": datetime.now(timezone.utc).isoformat()}
+            "missing": missing, "expected": {k:list(v[1]) for k,v in GROUPS.items()}, "timeframe": str(timeframe),
+            "as_of": (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()}
