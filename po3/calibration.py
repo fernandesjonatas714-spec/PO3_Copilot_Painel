@@ -125,6 +125,7 @@ def backfill_observations(db_path: str | Path) -> dict:
 
 
 def _stats(values: list[float]) -> dict:
+    values = [float(value) for value in values if value is not None]
     if not values:
         return {"median": None, "p25": None, "p75": None}
     ordered = sorted(values)
