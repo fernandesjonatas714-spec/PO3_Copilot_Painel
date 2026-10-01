@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from po3.market_state_store import freeze_market_state
 from po3.outcome_engine import calculate_outcomes
-from po3.storage.market_repository import get_m1_bar, insert_m1_bars, list_states
+from po3.storage.market_repository import get_m1_bar, get_v2_m1_bar, insert_m1_bars, list_states
 
 class StartPriceContractTests(unittest.TestCase):
     def setUp(self):
@@ -67,6 +67,30 @@ class StartPriceContractTests(unittest.TestCase):
         self._freeze(109)
         state=json.loads(list_states(self.path,self.symbol)[0]["state_json"])
         self.assertEqual(state["start_price"],109)
+
+    def test_legacy_bar_never_satisfies_v2_start_price(self):
+        insert_m1_bars([self._bar(-1, 109)], self.path)
+        self.assertIsNone(get_v2_m1_bar(self.symbol, self.cut-timedelta(minutes=1), self.path))
+
+    def test_canonical_bar_satisfies_v2_start_price(self):
+        bar=self._bar(-1, 109)
+        bar.update(source_timestamp_raw=int((self.cut-timedelta(minutes=1)).timestamp()), time_offset_seconds=0)
+        insert_m1_bars([bar], self.path)
+        found=get_v2_m1_bar(self.symbol, self.cut-timedelta(minutes=1), self.path)
+        self.assertIsNotNone(found)
+        self.assertEqual(found["close"],109)
+
+    def test_older_bar_does_not_fallback_when_exact_start_bar_is_missing(self):
+        old=self._bar(-61, 185)
+        old.update(source_timestamp_raw=int((self.cut-timedelta(minutes=61)).timestamp()), time_offset_seconds=0)
+        insert_m1_bars([old], self.path)
+        self.assertIsNone(get_v2_m1_bar(self.symbol, self.cut-timedelta(minutes=1), self.path))
+
+    def test_wrong_start_bar_is_rejected(self):
+        with self.assertRaises(ValueError):
+            freeze_market_state(self._snapshot(),{},cutoff_at_utc=self.cut,db_path=self.path,
+                symbol=self.symbol,start_price=109,start_bar_open_time=self.cut-timedelta(minutes=2),
+                start_price_status="DISPONIVEL")
 if __name__ == "__main__":
     unittest.main()
 

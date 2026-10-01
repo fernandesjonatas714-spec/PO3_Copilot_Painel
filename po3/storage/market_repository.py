@@ -22,12 +22,13 @@ def insert_m1_bars(bars: Iterable[Mapping], db_path: str | Path) -> int:
     for b in bars:
         rows.append((str(b["symbol"]), iso(b["timestamp_utc"]), float(b["open"]), float(b["high"]),
                      float(b["low"]), float(b["close"]), b.get("tick_volume"), b.get("real_volume"),
-                     b.get("spread"), b.get("source", "MT5"), CURRENT_SCHEMA_VERSION, now))
+                     b.get("spread"), b.get("source", "MT5"), CURRENT_SCHEMA_VERSION, now,
+                     b.get("source_timestamp_raw"), b.get("time_offset_seconds")))
     with connect(db_path) as c:
         before = c.total_changes
         c.executemany("""INSERT OR IGNORE INTO market_bars_m1
-          (symbol,timestamp_utc,open,high,low,close,tick_volume,real_volume,spread,source,schema_version,created_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
+          (symbol,timestamp_utc,open,high,low,close,tick_volume,real_volume,spread,source,schema_version,created_at,source_timestamp_raw,time_offset_seconds)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
         return c.total_changes - before
 
 def latest_m1_timestamp(symbol: str, db_path: str | Path) -> str | None:
@@ -48,6 +49,36 @@ def get_m1_bar(symbol: str, timestamp: datetime | str, db_path: str | Path) -> d
             (symbol, iso(timestamp)),
         ).fetchone()
         return dict(row) if row else None
+
+def get_v2_m1_bar(symbol: str, timestamp: datetime | str, db_path: str | Path) -> dict | None:
+    """Retorna somente a barra M1 canônica, no horário de abertura exato.
+
+    Registros sem os metadados de origem/alinhamento são históricos legados e
+    não podem satisfazer contratos causais da V2.
+    """
+    with connect(db_path) as c:
+        row = c.execute(
+            """SELECT * FROM market_bars_m1
+               WHERE symbol=? AND timestamp_utc=?
+                 AND source_timestamp_raw IS NOT NULL
+                 AND time_offset_seconds IS NOT NULL
+               LIMIT 1""",
+            (symbol, iso(timestamp)),
+        ).fetchone()
+        return dict(row) if row else None
+
+def get_v2_m1_range(symbol: str, start: datetime | str, end: datetime | str, db_path: str | Path) -> list[dict]:
+    """Faixa [start, end] contendo apenas barras M1 canônicas da V2."""
+    with connect(db_path) as c:
+        rows = c.execute(
+            """SELECT * FROM market_bars_m1
+               WHERE symbol=? AND timestamp_utc>=? AND timestamp_utc<=?
+                 AND source_timestamp_raw IS NOT NULL
+                 AND time_offset_seconds IS NOT NULL
+               ORDER BY timestamp_utc""",
+            (symbol, iso(start), iso(end)),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 def acquire_lease(name: str, symbol: str, db_path: str | Path, owner_id: str | None = None, ttl_seconds: int = 90) -> str | None:
     owner_id = owner_id or f"{os.getpid()}-{uuid.uuid4().hex}"
@@ -113,25 +144,45 @@ def collection_status(symbol: str, db_path: str | Path) -> dict:
                     "feed_status": runtime["status"] if runtime else "SEM_DADOS",
                     "feed_lag_seconds": runtime["feed_lag_seconds"] if runtime else None,
                     "last_closed_at_utc": runtime["last_closed_at_utc"] if runtime else None,
-                    "last_tick_at_utc": runtime["last_tick_at_utc"] if runtime else None}
+                    "last_tick_at_utc": runtime["last_tick_at_utc"] if runtime else None,
+                    "feed_liveness_status": runtime["feed_liveness_status"] if runtime and "feed_liveness_status" in runtime.keys() else None,
+                    "clock_alignment_status": runtime["clock_alignment_status"] if runtime and "clock_alignment_status" in runtime.keys() else None,
+                    "detected_offset_seconds": runtime["detected_offset_seconds"] if runtime and "detected_offset_seconds" in runtime.keys() else None,
+                    "normalized_tick_at_utc": runtime["normalized_tick_at_utc"] if runtime and "normalized_tick_at_utc" in runtime.keys() else None}
     except Exception as exc:
         return {"status": "ERRO", "erro": str(exc), "ultimo_m1": None, "ultimo_market_state": None, "outcomes_pendentes": 0}
 
 
-def update_runtime_status(symbol: str, db_path: str | Path, *, status: str, feed_lag_seconds: float | None, last_closed_at_utc: str | None, last_tick_at_utc: str | None, detail: str = "") -> None:
+def update_runtime_status(symbol: str, db_path: str | Path, *, status: str,
+                         feed_lag_seconds: float | None,
+                         last_closed_at_utc: str | None,
+                         last_tick_at_utc: str | None,
+                         detail: str = "",
+                         feed_liveness_status: str | None = None,
+                         clock_alignment_status: str | None = None,
+                         detected_offset_seconds: float | None = None,
+                         normalized_tick_at_utc: str | None = None) -> None:
     now = iso(utc_now())
     with connect(db_path) as c:
         c.execute("""CREATE TABLE IF NOT EXISTS collector_runtime_status (
             symbol TEXT PRIMARY KEY, status TEXT NOT NULL, feed_lag_seconds REAL,
             last_closed_at_utc TEXT, last_tick_at_utc TEXT, detail TEXT,
-            updated_at TEXT NOT NULL)""")
+            updated_at TEXT NOT NULL, feed_liveness_status TEXT,
+            clock_alignment_status TEXT, detected_offset_seconds REAL,
+            normalized_tick_at_utc TEXT)""")
         c.execute("""INSERT INTO collector_runtime_status
-            (symbol,status,feed_lag_seconds,last_closed_at_utc,last_tick_at_utc,detail,updated_at)
-            VALUES(?,?,?,?,?,?,?)
+            (symbol,status,feed_lag_seconds,last_closed_at_utc,last_tick_at_utc,detail,updated_at,
+             feed_liveness_status,clock_alignment_status,detected_offset_seconds,normalized_tick_at_utc)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(symbol) DO UPDATE SET status=excluded.status,
             feed_lag_seconds=excluded.feed_lag_seconds,last_closed_at_utc=excluded.last_closed_at_utc,
-            last_tick_at_utc=excluded.last_tick_at_utc,detail=excluded.detail,updated_at=excluded.updated_at""",
-            (symbol,status,feed_lag_seconds,last_closed_at_utc,last_tick_at_utc,detail,now))
+            last_tick_at_utc=excluded.last_tick_at_utc,detail=excluded.detail,updated_at=excluded.updated_at,
+            feed_liveness_status=excluded.feed_liveness_status,
+            clock_alignment_status=excluded.clock_alignment_status,
+            detected_offset_seconds=excluded.detected_offset_seconds,
+            normalized_tick_at_utc=excluded.normalized_tick_at_utc""",
+            (symbol,status,feed_lag_seconds,last_closed_at_utc,last_tick_at_utc,detail,now,
+             feed_liveness_status,clock_alignment_status,detected_offset_seconds,normalized_tick_at_utc))
 
 def runtime_status(symbol: str, db_path: str | Path) -> dict:
     with connect(db_path) as c:

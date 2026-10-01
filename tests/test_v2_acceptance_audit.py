@@ -1,6 +1,7 @@
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from types import SimpleNamespace
 from pathlib import Path
 from threading import Event
 
@@ -11,8 +12,12 @@ from po3.storage.market_repository import acquire_lease, release_lease
 
 class FakeMT5:
     TIMEFRAME_M1 = 1
-    def __init__(self, rows): self.rows = rows
+    def __init__(self, rows, tick_time=None):
+        self.rows = rows
+        self.tick_time = tick_time
     def copy_rates_from_pos(self, *args): return self.rows
+    def symbol_info_tick(self, symbol):
+        return SimpleNamespace(time=int(self.tick_time.timestamp()), time_msc=int(self.tick_time.timestamp()*1000), bid=1.0, ask=1.0, last=1.0)
 
 class V2AcceptanceAuditTests(unittest.TestCase):
     def setUp(self):
@@ -43,10 +48,15 @@ class V2AcceptanceAuditTests(unittest.TestCase):
     def test_worker_one_cycle_persists_and_releases(self):
         now = datetime(2026,1,1,12,2,30,tzinfo=timezone.utc)
         row = {"time": int(datetime(2026,1,1,12,1,tzinfo=timezone.utc).timestamp()), "open":1, "high":2, "low":0, "close":1.5}
-        mt5 = FakeMT5([row])
-        result = collect_once(CollectorConfig("WIN", str(self.path)), mt5, now_utc=now)
-        self.assertEqual(result["status"], "OK")
-        self.assertEqual(result["inserted"], 1)
+        mt5 = FakeMT5([row], now)
+        from po3.collection.time_alignment import Mt5TimeAlignmentDetector
+        detector = Mt5TimeAlignmentDetector()
+        first = collect_once(CollectorConfig("WIN", str(self.path)), mt5, now_utc=now, alignment_detector=detector)
+        self.assertEqual(first["status"], "UNAVAILABLE")
+        mt5.tick_time = now + timedelta(seconds=10)
+        second = collect_once(CollectorConfig("WIN", str(self.path)), mt5, now_utc=now + timedelta(seconds=10), alignment_detector=detector)
+        self.assertEqual(second["status"], "OK")
+        self.assertEqual(second["inserted"], 1)
         self.assertIsNotNone(acquire_lease("po3-m1","WIN",str(self.path),"second"))
         release_lease("po3-m1","WIN","second",str(self.path))
 

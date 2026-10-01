@@ -103,3 +103,40 @@ Para Outcome 5m, com cutoff 10:00 e target 10:05, o intervalo observado e
 [10:00, 10:05): entram as barras abertas 10:00, 10:01, 10:02, 10:03 e
 10:04. future_price e o fechamento de 10:04; future_high e future_low
 sao calculados somente nesse conjunto. A barra aberta as 10:05 e excluida.
+
+
+## Alinhamento temporal MT5
+
+O coletor separa o timestamp cru do MT5 do timestamp UTC canonico. O detector
+faz duas ou mais observacoes do tick, valida liveness e estima o offset sem
+assumir America/Sao_Paulo ou qualquer valor fixo. O offset canonico e
+arredondado ao minuto mais proximo apenas para neutralizar jitter de segundos;
+o valor detectado e persistido para auditoria.
+
+Barras novas persistem source_timestamp_raw, timestamp_utc normalizado e
+time_offset_seconds. O freshness gate usa apenas o tick e as barras ja
+normalizados. Os estados de runtime distinguem feed_liveness_status de
+clock_alignment_status; offset detectado nao e classificado como feed stale.
+
+Na auditoria de 2026-10-01, o banco principal possuia 2.412 barras anteriores,
+sem MarketState ou outcome. Esses registros nao foram reescritos, pois nao
+havia metadata suficiente para provar o offset historico. Foi criado o backup
+data/po3_learning.backup-20261001T185144Z.sqlite antes da migracao. A partir da
+proxima coleta, somente barras com alinhamento validado recebem os campos de
+origem e UTC canonico.
+
+A validação anterior registrou uma origem inconsistente (cutoff 19:05 UTC,
+relato de close 18:59 UTC). O SQLite temporário dessa execução foi removido,
+portanto a origem daquele registro não pode ser reaberta retrospectivamente.
+Essa inconsistência não é mais aceita pela V2: a seleção agora consulta
+exclusivamente a barra canônica cujo horário de abertura é exatamente
+cutoff_at_utc menos 1 minuto; se ela não existir, o estado fica
+start_price_status=INDISPONIVEL, sem fallback.
+
+Na validação corretiva de 2026-10-01, no banco principal, o MarketState real
+teve cutoff 19:50 UTC, expected_start_bar e actual_start_bar 19:49 UTC,
+start_price 187970.0, com source_timestamp_raw e time_offset_seconds
+preenchidos. O Outcome 5m foi DISPONIVEL no target 19:55 UTC, usando somente as
+barras 19:50–19:54, com future_price 187935.0, future_high 188100.0 e
+future_low 187905.0. Após reinício, permaneceu um único MarketState para cada
+cutoff e um único Outcome 5m. Nenhuma chamada de LLM ou ordem foi realizada.

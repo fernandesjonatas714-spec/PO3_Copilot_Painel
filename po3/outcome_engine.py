@@ -1,7 +1,7 @@
 """Outcomes causais: uma barra M1 é identificada pelo horário de abertura."""
 from __future__ import annotations
 from datetime import datetime, timedelta, timezone
-from po3.storage.market_repository import list_states,get_m1_range,upsert_outcome
+from po3.storage.market_repository import list_states,get_v2_m1_range,upsert_outcome
 HORIZONS={"5m":5,"15m":15,"30m":30,"60m":60}
 def _time(value):
     if isinstance(value,datetime): return value.astimezone(timezone.utc)
@@ -32,12 +32,19 @@ def process_pending_outcomes(db_path:str,*,symbol:str|None=None,now_utc:datetime
     import json
     for row in list_states(db_path,symbol):
         state=json.loads(row["state_json"])
-        # V2 states use only start_price; keep legacy rows readable.
-        start=state["start_price"] if "start_price" in state else state.get("preco_atual")
-        if start is None:
-            # Without exact cutoff-1m bar no causal outcome is persisted.
+        # Somente estados V2 com start_price causal podem gerar Outcome V2.
+        # Estados antigos que só possuem preco_atual são LEGACY_UNALIGNED.
+        if "start_price" not in state or state.get("start_price_status") != "DISPONIVEL":
             continue
-        bars=get_m1_range(row["symbol"],_time(row["cutoff_at_utc"]),now,db_path)
-        for outcome in calculate_outcomes(state_id=int(row["id"]),symbol=row["symbol"],cutoff_at_utc=_time(row["cutoff_at_utc"]),start_price=float(start),bars=bars,now_utc=now):
+        start=state.get("start_price")
+        if start is None:
+            continue
+        cutoff = _time(row["cutoff_at_utc"])
+        expected_start = cutoff - timedelta(minutes=1)
+        actual_start = state.get("start_bar_open_time")
+        if actual_start is None or _time(actual_start) != expected_start:
+            raise ValueError("INCONSISTENCIA_START_BAR: estado V2 DISPONIVEL fora de cutoff-1m")
+        bars=get_v2_m1_range(row["symbol"],cutoff,now,db_path)
+        for outcome in calculate_outcomes(state_id=int(row["id"]),symbol=row["symbol"],cutoff_at_utc=cutoff,start_price=float(start),bars=bars,now_utc=now):
             upsert_outcome(outcome,db_path); processed+=1
     return processed

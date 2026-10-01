@@ -72,6 +72,20 @@ def migrate(db_path: str | Path) -> str:
           last_closed_at_utc TEXT, last_tick_at_utc TEXT, detail TEXT, updated_at TEXT NOT NULL
         );
         """)
+        bar_columns = {row[1] for row in conn.execute("PRAGMA table_info(market_bars_m1)")}
+        if "source_timestamp_raw" not in bar_columns:
+            conn.execute("ALTER TABLE market_bars_m1 ADD COLUMN source_timestamp_raw INTEGER")
+        if "time_offset_seconds" not in bar_columns:
+            conn.execute("ALTER TABLE market_bars_m1 ADD COLUMN time_offset_seconds REAL")
+        runtime_columns = {row[1] for row in conn.execute("PRAGMA table_info(collector_runtime_status)")}
+        if "feed_liveness_status" not in runtime_columns:
+            conn.execute("ALTER TABLE collector_runtime_status ADD COLUMN feed_liveness_status TEXT")
+        if "clock_alignment_status" not in runtime_columns:
+            conn.execute("ALTER TABLE collector_runtime_status ADD COLUMN clock_alignment_status TEXT")
+        if "detected_offset_seconds" not in runtime_columns:
+            conn.execute("ALTER TABLE collector_runtime_status ADD COLUMN detected_offset_seconds REAL")
+        if "normalized_tick_at_utc" not in runtime_columns:
+            conn.execute("ALTER TABLE collector_runtime_status ADD COLUMN normalized_tick_at_utc TEXT")
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?,?)",
                      (CURRENT_SCHEMA_VERSION, datetime.now(timezone.utc).isoformat()))
     return CURRENT_SCHEMA_VERSION

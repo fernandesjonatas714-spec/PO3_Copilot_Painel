@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from types import SimpleNamespace
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from po3.collection.mt5_m1_collector import CollectorConfig, collect_once
@@ -8,8 +9,10 @@ from po3.outcome_engine import calculate_outcomes
 
 class Fake:
     TIMEFRAME_M1=1
-    def __init__(self, rows): self.rows=rows
+    def __init__(self, rows, tick_time): self.rows=rows; self.tick_time=tick_time
     def copy_rates_from_pos(self,*args): return self.rows
+    def symbol_info_tick(self, symbol):
+        return SimpleNamespace(time=int(self.tick_time.timestamp()), time_msc=int(self.tick_time.timestamp()*1000), bid=1.0, ask=1.0, last=1.0)
 
 class V2GapOutcomeTests(unittest.TestCase):
     def setUp(self):
@@ -21,9 +24,16 @@ class V2GapOutcomeTests(unittest.TestCase):
     def test_gap_recovery_and_restart_are_idempotent(self):
         base=datetime(2026,1,1,10,26,tzinfo=timezone.utc)
         rows=[{"time":int((base+timedelta(minutes=i)).timestamp()),"open":1+i,"high":2+i,"low":i,"close":1.5+i} for i in range(5)]
-        result=collect_once(CollectorConfig("WIN",str(self.db)),Fake(rows),now_utc=datetime(2026,1,1,10,31,30,tzinfo=timezone.utc))
+        mt5=Fake(rows,datetime(2026,1,1,10,31,30,tzinfo=timezone.utc))
+        from po3.collection.time_alignment import Mt5TimeAlignmentDetector
+        detector=Mt5TimeAlignmentDetector()
+        first=collect_once(CollectorConfig("WIN",str(self.db)),mt5,now_utc=datetime(2026,1,1,10,31,30,tzinfo=timezone.utc),alignment_detector=detector)
+        self.assertEqual(first["inserted"],0)
+        mt5.tick_time=datetime(2026,1,1,10,31,40,tzinfo=timezone.utc)
+        result=collect_once(CollectorConfig("WIN",str(self.db)),mt5,now_utc=mt5.tick_time,alignment_detector=detector)
         self.assertEqual(result["inserted"],5)
-        again=collect_once(CollectorConfig("WIN",str(self.db)),Fake(rows),now_utc=datetime(2026,1,1,10,31,30,tzinfo=timezone.utc))
+        mt5.tick_time=datetime(2026,1,1,10,31,50,tzinfo=timezone.utc)
+        again=collect_once(CollectorConfig("WIN",str(self.db)),mt5,now_utc=mt5.tick_time,alignment_detector=detector)
         self.assertEqual(again["inserted"],0)
         self.assertEqual(len(get_m1_range("WIN",base-timedelta(minutes=1),base+timedelta(minutes=5),str(self.db))),5)
     def test_expired_lease_can_be_reclaimed(self):

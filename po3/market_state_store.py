@@ -37,8 +37,15 @@ def freeze_market_state(snapshot,context:dict,*,cutoff_at_utc:datetime,db_path:s
     cutoff=_utc(cutoff_at_utc); expected_start=cutoff-timedelta(minutes=1)
     frozen=_filter_snapshot(snapshot,cutoff); state=build_market_state(frozen,context)
     # V2 contract: start price is only CLOSE of the exact previous M1 bar.
-    start_time=_utc(start_bar_open_time or expected_start)
+    supplied_start_time = _utc(start_bar_open_time) if start_bar_open_time is not None else expected_start
+    if supplied_start_time != expected_start:
+        raise ValueError("INCONSISTENCIA_START_BAR: start_bar_open_time deve ser cutoff_at_utc - 1 minuto")
     status=start_price_status or ("DISPONIVEL" if start_price is not None else "INDISPONIVEL")
+    if status == "DISPONIVEL" and start_price is None:
+        raise ValueError("INCONSISTENCIA_START_PRICE: DISPONIVEL exige start_price")
+    if status == "INDISPONIVEL":
+        start_price = None
+    start_time=expected_start
     payload=_json_safe({"ativo":state.ativo,"timestamp":state.timestamp,"preco_atual":start_price,
         "start_price":start_price,"start_bar_open_time":start_time.isoformat(),"start_price_status":status,
         "tecnico":state.tecnico,"mercado_domestico":state.mercado_domestico,"mercado_externo":state.mercado_externo,
