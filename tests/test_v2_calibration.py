@@ -36,15 +36,15 @@ class CalibrationObservationTests(unittest.TestCase):
                 "modelo_utilizado": "qwen/qwen3.8-27b:free", "fallback_utilizado": False,
                 "reparo_json_utilizado": False}
 
-    def add_analysis(self, state, decision="CONTEXTO_COMPRADOR", confidence="ALTA"):
+    def add_analysis(self, state, decision="CONTEXTO_COMPRADOR", confidence="ALTA", symbol="WIN"):
         with sqlite3.connect(self.path) as c:
             cur = c.execute("INSERT INTO analysis_runs (created_at,symbol,price,bias,response,context_json,snapshot_json) VALUES (?,?,?,?,?,?,?)",
-                            ("2026-01-02T13:00:00+00:00", "WIN", 100, "neutro", "texto",
+                            ("2026-01-02T13:00:00+00:00", symbol, 100, "neutro", "texto",
                              json.dumps({"_structured": self.analysis(state, decision, confidence)}), json.dumps(state)))
             return cur.lastrowid
 
-    def add_outcome(self, state_id, horizon="5m", change=.01):
-        upsert_outcome({"market_state_id": state_id, "symbol": "WIN", "horizon_code": horizon,
+    def add_outcome(self, state_id, horizon="5m", change=.01, symbol="WIN"):
+        upsert_outcome({"market_state_id": state_id, "symbol": symbol, "horizon_code": horizon,
                         "target_at_utc": "2026-01-02T13:05:00+00:00", "start_price": 100,
                         "future_price": 100 + change, "future_high": 101, "future_low": 99,
                         "high_delta": 1, "low_delta": -1, "absolute_change": change,
@@ -66,6 +66,19 @@ class CalibrationObservationTests(unittest.TestCase):
         insert_market_state(state, self.path, cutoff_at_utc=state["timestamp"], symbol="WIN")
         analysis_id = self.add_analysis(self.state("2026-01-02T13:01:00+00:00"))
         self.assertEqual(record_observation_for_analysis(analysis_id, self.path), "UNMATCHED")
+
+    def test_unmatched_promotes_to_matched_after_canonical_state_is_created(self):
+        state = self.state()
+        analysis_id = self.add_analysis(state)
+        self.assertEqual(record_observation_for_analysis(analysis_id, self.path), "UNMATCHED")
+        with sqlite3.connect(self.path) as c:
+            self.assertEqual(c.execute("SELECT link_status FROM decision_observations WHERE analysis_run_id=?", (analysis_id,)).fetchone()[0], "UNMATCHED")
+        state_id = insert_market_state(state, self.path, cutoff_at_utc=state["timestamp"], symbol="WIN")
+        self.assertEqual(record_observation_for_analysis(analysis_id, self.path), "MATCHED")
+        with sqlite3.connect(self.path) as c:
+            row = c.execute("SELECT market_state_id,link_status FROM decision_observations WHERE analysis_run_id=?", (analysis_id,)).fetchone()
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM decision_observations WHERE analysis_run_id=?", (analysis_id,)).fetchone()[0], 1)
+        self.assertEqual(row, (state_id, "MATCHED"))
 
     def test_ambiguous_when_canonical_state_has_two_candidates(self):
         state = self.state()
@@ -132,6 +145,21 @@ class CalibrationObservationTests(unittest.TestCase):
         with sqlite3.connect(self.path) as c:
             row = c.execute("select analysis_run_id,link_status from decision_observations").fetchone()
         self.assertEqual(row, (analysis_id, "UNMATCHED"))
+
+    def test_calibration_report_filters_observations_by_symbol(self):
+        win_state = self.state("2026-01-02T13:00:00+00:00")
+        dol_state = {**self.state("2026-01-02T13:01:00+00:00"), "ativo": "DOL"}
+        win_id = insert_market_state(win_state, self.path, cutoff_at_utc=win_state["timestamp"], symbol="WIN")
+        dol_id = insert_market_state(dol_state, self.path, cutoff_at_utc=dol_state["timestamp"], symbol="DOL")
+        win_analysis = self.add_analysis(win_state, symbol="WIN")
+        dol_analysis = self.add_analysis(dol_state, symbol="DOL")
+        self.assertEqual(record_observation_for_analysis(win_analysis, self.path), "MATCHED")
+        self.assertEqual(record_observation_for_analysis(dol_analysis, self.path), "MATCHED")
+        self.add_outcome(win_id, symbol="WIN")
+        self.add_outcome(dol_id, symbol="DOL")
+        self.assertEqual(calibration_report(self.path, "WIN")["observations"], 1)
+        self.assertEqual(calibration_report(self.path, "DOL")["observations"], 1)
+        self.assertEqual(calibration_report(self.path)["observations"], 2)
 
 
 if __name__ == "__main__":

@@ -88,6 +88,25 @@ def _link_for(row: sqlite3.Row, states: list[dict]) -> dict:
             "created_at": datetime.now(timezone.utc).isoformat()}
 
 
+def _upsert_observation(conn: sqlite3.Connection, observation: dict) -> str:
+    """Persiste o vínculo por analysis_run_id e retorna o status efetivamente salvo."""
+    columns = list(observation)
+    placeholders = ",".join("?" for _ in columns)
+    assignments = ",".join(
+        f"{column}=excluded.{column}" for column in columns if column != "analysis_run_id"
+    )
+    conn.execute(
+        f"INSERT INTO decision_observations ({','.join(columns)}) VALUES ({placeholders}) "
+        f"ON CONFLICT(analysis_run_id) DO UPDATE SET {assignments}",
+        tuple(observation[column] for column in columns),
+    )
+    row = conn.execute(
+        "SELECT link_status FROM decision_observations WHERE analysis_run_id=?",
+        (observation["analysis_run_id"],),
+    ).fetchone()
+    return str(row[0])
+
+
 def record_observation_for_analysis(analysis_id: int, db_path: str | Path) -> str:
     """Vincula uma análise uma única vez; falhas não são propagadas ao chat."""
     path = migrate(db_path) and Path(db_path)
@@ -97,12 +116,7 @@ def record_observation_for_analysis(analysis_id: int, db_path: str | Path) -> st
         row = _load_analysis(conn, analysis_id)
         if row is None:
             return "UNMATCHED"
-        observation = _link_for(row, states)
-        columns = list(observation)
-        placeholders = ",".join("?" for _ in columns)
-        conn.execute(f"INSERT OR IGNORE INTO decision_observations ({','.join(columns)}) VALUES ({placeholders})",
-                     tuple(observation[column] for column in columns))
-        return observation["link_status"]
+        return _upsert_observation(conn, _link_for(row, states))
 
 
 def backfill_observations(db_path: str | Path) -> dict:
@@ -112,11 +126,7 @@ def backfill_observations(db_path: str | Path) -> dict:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM analysis_runs ORDER BY id").fetchall()
         for row in rows:
-            observation = _link_for(row, states)
-            columns = list(observation)
-            placeholders = ",".join("?" for _ in columns)
-            conn.execute(f"INSERT OR IGNORE INTO decision_observations ({','.join(columns)}) VALUES ({placeholders})",
-                         tuple(observation[column] for column in columns))
+            _upsert_observation(conn, _link_for(row, states))
     with sqlite3.connect(path) as conn:
         counts = {status: conn.execute("SELECT COUNT(*) FROM decision_observations WHERE link_status=?", (status,)).fetchone()[0]
                   for status in ("MATCHED", "UNMATCHED", "AMBIGUOUS")}
@@ -177,7 +187,13 @@ def calibration_report(db_path: str | Path, symbol: str | None = None, *, genera
         uri = f"file:{path.resolve().as_posix()}?mode=ro"
         with sqlite3.connect(uri, uri=True) as conn:
             conn.row_factory = sqlite3.Row
-            observations = [dict(row) for row in conn.execute("SELECT * FROM decision_observations WHERE link_status='MATCHED'").fetchall()]
+            if symbol is None:
+                query = "SELECT * FROM decision_observations WHERE link_status='MATCHED'"
+                params = ()
+            else:
+                query = "SELECT * FROM decision_observations WHERE link_status='MATCHED' AND symbol=?"
+                params = (symbol,)
+            observations = [dict(row) for row in conn.execute(query, params).fetchall()]
     outcomes_by_key = {(row["market_state_id"], row["horizon_code"]): row for row in outcomes if row.get("status") == "DISPONIVEL"}
     result = {}
     abstentions = defaultdict(list)
