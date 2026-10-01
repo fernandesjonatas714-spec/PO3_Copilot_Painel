@@ -50,6 +50,19 @@ def closed_m1_bars(mt5: Any,symbol: str,now_utc: datetime|None=None,count: int=2
 def _slot(value:datetime,interval:int=5)->datetime:
     value=value.astimezone(timezone.utc).replace(second=0,microsecond=0)
     return value.replace(minute=(value.minute//interval)*interval)
+def wait_for_stop(stop_event: Event, stop_file: str | None, poll_seconds: float) -> bool:
+    """Aguarda o próximo ciclo sem deixar o stop file adormecer o worker."""
+    deadline = datetime.now(timezone.utc).timestamp() + max(0.0, float(poll_seconds))
+    while True:
+        if stop_event.is_set():
+            return True
+        if stop_file and os.path.exists(stop_file):
+            stop_event.set()
+            return True
+        remaining = deadline - datetime.now(timezone.utc).timestamp()
+        if remaining <= 0:
+            return stop_event.is_set()
+        stop_event.wait(min(0.5, remaining))
 def _tick_time(mt5:Any,symbol:str)->datetime|None:
     try:
         tick=mt5.symbol_info_tick(symbol)
@@ -157,7 +170,8 @@ def run_worker(config:CollectorConfig,mt5:Any,stop_event:Event|None=None,max_cyc
                 print(f"Worker factual: {type(exc).__name__}",flush=True)
             if not heartbeat(config.lease_name,config.symbol,owner,config.db_path,config.lease_ttl_seconds):raise RuntimeError("Lease perdido durante a coleta")
             cycles+=1
-            if max_cycles is None:stop_event.wait(max(1,config.poll_seconds))
+            if max_cycles is None:
+                wait_for_stop(stop_event, os.getenv("PO3_WORKER_STOP_FILE"), max(1, config.poll_seconds))
     finally:release_lease(config.lease_name,config.symbol,owner,config.db_path)
 def main()->int:
     parser=argparse.ArgumentParser(description="Worker M1, MarketState e outcomes do PO3 Copilot")

@@ -1,6 +1,8 @@
 import tempfile
 import unittest
 import os
+import threading
+import time
 from datetime import datetime, timezone, timedelta
 from types import SimpleNamespace
 from pathlib import Path
@@ -13,12 +15,22 @@ from po3.storage.market_repository import acquire_lease, release_lease
 
 class FakeMT5:
     TIMEFRAME_M1 = 1
+    TIMEFRAME_M5 = 5
+    TIMEFRAME_M15 = 15
+    TIMEFRAME_M30 = 30
+    TIMEFRAME_H1 = 60
+    TIMEFRAME_H4 = 240
+    TIMEFRAME_D1 = 1440
+    TIMEFRAME_W1 = 10080
+    TIMEFRAME_MN1 = 43200
     def __init__(self, rows, tick_time=None):
         self.rows = rows
         self.tick_time = tick_time
     def copy_rates_from_pos(self, *args): return self.rows
     def symbol_info_tick(self, symbol):
         return SimpleNamespace(time=int(self.tick_time.timestamp()), time_msc=int(self.tick_time.timestamp()*1000), bid=1.0, ask=1.0, last=1.0)
+    def terminal_info(self): return SimpleNamespace(connected=True)
+    def account_info(self): return None
 
 class V2AcceptanceAuditTests(unittest.TestCase):
     def setUp(self):
@@ -78,6 +90,34 @@ class V2AcceptanceAuditTests(unittest.TestCase):
         os.environ["PO3_WORKER_STOP_FILE"] = str(stop_path)
         try:
             run_worker(CollectorConfig("WIN", str(self.path)), FakeMT5([]), max_cycles=2)
+            import sqlite3
+            with sqlite3.connect(self.path) as conn:
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM collector_leases").fetchone()[0], 0)
+        finally:
+            if old is None: os.environ.pop("PO3_WORKER_STOP_FILE", None)
+            else: os.environ["PO3_WORKER_STOP_FILE"] = old
+            stop_path.unlink(missing_ok=True)
+
+    def test_stop_file_interrupts_long_poll_without_terminate(self):
+        stop_path = self.path.with_suffix(".race.stop")
+        stop_path.unlink(missing_ok=True)
+        old = os.environ.get("PO3_WORKER_STOP_FILE")
+        os.environ["PO3_WORKER_STOP_FILE"] = str(stop_path)
+        worker = threading.Thread(
+            target=run_worker,
+            args=(CollectorConfig("WIN", str(self.path), poll_seconds=15),
+                  FakeMT5([], datetime.now(timezone.utc))),
+            daemon=True,
+        )
+        started = time.monotonic()
+        worker.start()
+        time.sleep(1.0)
+        stop_path.write_text("stop\n", encoding="ascii")
+        worker.join(timeout=5.0)
+        elapsed = time.monotonic() - started
+        try:
+            self.assertFalse(worker.is_alive(), "worker ficou aguardando o poll completo")
+            self.assertLess(elapsed, 7.0)
             import sqlite3
             with sqlite3.connect(self.path) as conn:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM collector_leases").fetchone()[0], 0)
