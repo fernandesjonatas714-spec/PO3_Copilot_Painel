@@ -14,6 +14,8 @@ from po3.ai_service import OpenRouterError, configured_model_name, send_message,
 from po3.decision_engine import DecisionEngine
 from po3.decision_engine.narrative import generate_narrative
 from po3.learning_store import record_ai_error, recent_analyses, save_analysis
+from po3.analytics import build_evaluation_report
+from po3.v2_config import EVALUATION_ENGINE_ENABLED
 
 DEFAULT_TERMINAL = r"C:\Program Files\Clear Investimentos MT5 Terminal\terminal64.exe"
 
@@ -574,6 +576,46 @@ def render_collection_status(symbol: str) -> None:
         st.caption(f"Último M1: {status.get('last_closed_at_utc') or status.get('ultimo_m1') or '—'} · Atraso: {lag_text}")
         st.caption(f"Último MarketState: {status.get('ultimo_market_state') or '—'} · Outcomes pendentes: {status.get('outcomes_pendentes', 0)}")
 
+
+def render_evaluation(symbol: str) -> None:
+    """Área somente leitura; não coleta, não chama LLM e não altera o banco."""
+    if not EVALUATION_ENGINE_ENABLED:
+        return
+    db_path = os.path.join(os.path.dirname(__file__), "data", "po3_learning.sqlite")
+    try:
+        report = build_evaluation_report(db_path, symbol)
+    except Exception as exc:
+        with st.expander("Avaliação V2", expanded=False):
+            st.caption(f"Avaliação indisponível: {type(exc).__name__}")
+        return
+    with st.expander("Avaliação V2", expanded=False):
+        st.caption(f"Versão {report['evaluation_version']} · geração UTC {report['generated_at_utc']}")
+        if not report["market_states"]:
+            st.info("Nenhum MarketState factual disponível para avaliação.")
+            return
+        for horizon, item in report["horizons"].items():
+            sample = item["available_sample_size"]
+            st.markdown(f"**Horizonte: {horizon}** · Amostra disponível: **{sample}** · Maturidade: **{item['sample_band']}**")
+            if sample < 30:
+                st.caption("Amostra insuficiente para interpretação robusta.")
+            elif sample < 100:
+                st.caption("Amostra preliminar.")
+            elif sample < 200:
+                st.caption("Amostra utilizável para análise descritiva.")
+            else:
+                st.caption("Amostra mais robusta para análise descritiva.")
+            status = item["status"]
+            st.write("Cobertura:", " · ".join(f"{key}: {value}" for key, value in sorted(status.items())) or "Sem Outcomes")
+            stats = item["metrics"]["percentage_change"]
+            st.write({"Mediana %": stats["median"], "P25": stats["p25"], "P75": stats["p75"],
+                      "High delta mediano": item["metrics"]["high_delta"]["median"],
+                      "Low delta mediano": item["metrics"]["low_delta"]["median"]})
+            distribution = item["directional_distribution"]
+            st.caption(f"Movimento futuro — Positivo: {distribution['positive']} · Negativo: {distribution['negative']} · Neutro: {distribution['zero']}")
+        quality = report["data_quality"]
+        with st.expander("Qualidade dos dados", expanded=False):
+            st.json(quality)
+
 with st.sidebar:
     st.markdown('<div class="brand"><div class="brand-mark">P3</div><div><div class="brand-title">PO3 Copilot B3</div><div class="brand-sub">Painel macro operacional</div></div></div>', unsafe_allow_html=True)
     st.markdown("**Configuração de leitura**")
@@ -597,6 +639,7 @@ def live():
 live()
 if "latest_snapshot" in st.session_state:
     render_collection_status(symbol)
+    render_evaluation(symbol)
 if "latest_snapshot" in st.session_state:
     render_local_chat(st.session_state["latest_snapshot"])
 
