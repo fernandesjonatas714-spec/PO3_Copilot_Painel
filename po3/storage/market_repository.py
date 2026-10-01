@@ -37,7 +37,7 @@ def latest_m1_timestamp(symbol: str, db_path: str | Path) -> str | None:
 
 def get_m1_range(symbol: str, start: datetime | str, end: datetime | str, db_path: str | Path) -> list[dict]:
     with connect(db_path) as c:
-        rows = c.execute("SELECT * FROM market_bars_m1 WHERE symbol=? AND timestamp_utc>? AND timestamp_utc<=? ORDER BY timestamp_utc", (symbol,iso(start),iso(end))).fetchall()
+        rows = c.execute("SELECT * FROM market_bars_m1 WHERE symbol=? AND timestamp_utc>=? AND timestamp_utc<=? ORDER BY timestamp_utc", (symbol,iso(start),iso(end))).fetchall()
         return [dict(r) for r in rows]
 
 def acquire_lease(name: str, symbol: str, db_path: str | Path, owner_id: str | None = None, ttl_seconds: int = 90) -> str | None:
@@ -98,7 +98,37 @@ def collection_status(symbol: str, db_path: str | Path) -> dict:
             pending = c.execute("SELECT COUNT(*) AS n FROM observed_outcomes WHERE status IN ('PENDENTE','SEM_DADO') AND symbol=?", (symbol,)).fetchone()
             now = utc_now()
             active = bool(lease and lease["expires_at"] > iso(now))
+            runtime = c.execute("SELECT * FROM collector_runtime_status WHERE symbol=?", (symbol,)).fetchone()
             return {"status": "ATIVA" if active else "PAUSADA", "ultimo_m1": bar["ts"] if bar else None,
-                    "ultimo_market_state": state["ts"] if state else None, "outcomes_pendentes": int(pending["n"] if pending else 0)}
+                    "ultimo_market_state": state["ts"] if state else None, "outcomes_pendentes": int(pending["n"] if pending else 0),
+                    "feed_status": runtime["status"] if runtime else "SEM_DADOS",
+                    "feed_lag_seconds": runtime["feed_lag_seconds"] if runtime else None,
+                    "last_closed_at_utc": runtime["last_closed_at_utc"] if runtime else None,
+                    "last_tick_at_utc": runtime["last_tick_at_utc"] if runtime else None}
     except Exception as exc:
         return {"status": "ERRO", "erro": str(exc), "ultimo_m1": None, "ultimo_market_state": None, "outcomes_pendentes": 0}
+
+
+def update_runtime_status(symbol: str, db_path: str | Path, *, status: str, feed_lag_seconds: float | None, last_closed_at_utc: str | None, last_tick_at_utc: str | None, detail: str = "") -> None:
+    now = iso(utc_now())
+    with connect(db_path) as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS collector_runtime_status (
+            symbol TEXT PRIMARY KEY, status TEXT NOT NULL, feed_lag_seconds REAL,
+            last_closed_at_utc TEXT, last_tick_at_utc TEXT, detail TEXT,
+            updated_at TEXT NOT NULL)""")
+        c.execute("""INSERT INTO collector_runtime_status
+            (symbol,status,feed_lag_seconds,last_closed_at_utc,last_tick_at_utc,detail,updated_at)
+            VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(symbol) DO UPDATE SET status=excluded.status,
+            feed_lag_seconds=excluded.feed_lag_seconds,last_closed_at_utc=excluded.last_closed_at_utc,
+            last_tick_at_utc=excluded.last_tick_at_utc,detail=excluded.detail,updated_at=excluded.updated_at""",
+            (symbol,status,feed_lag_seconds,last_closed_at_utc,last_tick_at_utc,detail,now))
+
+def runtime_status(symbol: str, db_path: str | Path) -> dict:
+    with connect(db_path) as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS collector_runtime_status (
+            symbol TEXT PRIMARY KEY, status TEXT NOT NULL, feed_lag_seconds REAL,
+            last_closed_at_utc TEXT, last_tick_at_utc TEXT, detail TEXT,
+            updated_at TEXT NOT NULL)""")
+        row=c.execute("SELECT * FROM collector_runtime_status WHERE symbol=?",(symbol,)).fetchone()
+        return dict(row) if row else {"symbol":symbol,"status":"SEM_DADOS","feed_lag_seconds":None,"last_closed_at_utc":None,"last_tick_at_utc":None,"detail":"Ainda sem coleta."}

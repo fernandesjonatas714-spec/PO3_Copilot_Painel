@@ -559,11 +559,16 @@ def render_collection_status(symbol: str) -> None:
     from po3.storage.market_repository import collection_status
     from po3.v2_config import AUTO_DATA_COLLECTION
     status = collection_status(symbol, os.path.join(os.path.dirname(__file__), "data", "po3_learning.sqlite"))
-    label = "Ativa" if AUTO_DATA_COLLECTION and status.get("status") == "ATIVA" else ("Erro" if status.get("status") == "ERRO" else "Pausada")
+    worker = "Ativo" if status.get("status") == "ATIVA" else ("Erro" if status.get("status") == "ERRO" else "Inativo")
+    feed = status.get("feed_status", "SEM_DADOS")
+    feed_label = "Atual" if feed == "ATUAL" else ("Atrasado" if feed == "MT5_DATA_STALE" else ("Mercado fechado" if feed == "SEM_NOVO_CANDLE_MERCADO_FECHADO" else feed))
+    lag = status.get("feed_lag_seconds")
+    lag_text = "—" if lag is None else f"{lag:.0f} s"
     with st.container(border=True):
         st.caption("Coleta histórica")
-        st.write(label)
-        st.caption(f"Último M1: {status.get('ultimo_m1') or '—'} · Último MarketState: {status.get('ultimo_market_state') or '—'} · Outcomes pendentes: {status.get('outcomes_pendentes', 0)}")
+        st.write(f"Worker: {worker} · Feed MT5: {feed_label}")
+        st.caption(f"Último M1: {status.get('last_closed_at_utc') or status.get('ultimo_m1') or '—'} · Atraso: {lag_text}")
+        st.caption(f"Último MarketState: {status.get('ultimo_market_state') or '—'} · Outcomes pendentes: {status.get('outcomes_pendentes', 0)}")
 
 with st.sidebar:
     st.markdown('<div class="brand"><div class="brand-mark">P3</div><div><div class="brand-title">PO3 Copilot B3</div><div class="brand-sub">Painel macro operacional</div></div></div>', unsafe_allow_html=True)

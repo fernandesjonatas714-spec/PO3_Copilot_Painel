@@ -62,3 +62,25 @@ qualquer alteração de produção.
 Dados históricos de notícias/calendário podem não existir para todos os cortes;
 nesse caso o estado deve marcar contexto parcial. A fonte factual primária dos
 preços continua sendo o MT5. Não há nesta camada qualquer chamada de ordem.
+
+
+## Gate de frescor e semântica dos outcomes
+
+Durante uma sessão ativa, um MarketState somente é criado quando o último
+candle M1 totalmente fechado está dentro de MT5_MAX_FEED_LAG_SECONDS
+(padrão: 120 segundos). O status MT5_DATA_STALE impede a criação silenciosa.
+Fora da sessão, a ausência de candle é registrada como
+SEM_NOVO_CANDLE_MERCADO_FECHADO, não como erro de feed.
+
+Como o MT5 identifica uma barra pelo horário de abertura, o cutoff é inclusivo
+para a barra aberta no cutoff e exclusivo para a barra aberta no target. Assim,
+para cutoff 10:00 e target 10:05, entram somente as barras 10:00, 10:01,
+10:02, 10:03 e 10:04. O preço futuro é o fechamento da barra aberta às
+10:04, que termina exatamente às 10:05; máximas e mínimas usam o mesmo
+intervalo. A barra 10:05 não entra no Outcome 5m.
+
+Antes de target_at, o status é PENDENTE. Depois do target, se ainda faltam
+barras factuais por atraso temporário, o status é PENDENTE_DADOS. SEM_DADO
+ou MERCADO_FECHADO somente indicam ausência factual confirmada, nunca um
+substituto inventado. O processor pode ser executado repetidamente: quando o
+feed se recupera, o mesmo registro passa a DISPONIVEL sem duplicação.

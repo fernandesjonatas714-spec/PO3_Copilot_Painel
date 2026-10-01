@@ -67,6 +67,10 @@ def migrate(db_path: str | Path) -> str:
           UNIQUE(market_state_id,horizon_code)
         );
         CREATE INDEX IF NOT EXISTS idx_outcomes_state ON observed_outcomes(market_state_id);
+        CREATE TABLE IF NOT EXISTS collector_runtime_status (
+          symbol TEXT PRIMARY KEY, status TEXT NOT NULL, feed_lag_seconds REAL,
+          last_closed_at_utc TEXT, last_tick_at_utc TEXT, detail TEXT, updated_at TEXT NOT NULL
+        );
         """)
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?,?)",
                      (CURRENT_SCHEMA_VERSION, datetime.now(timezone.utc).isoformat()))

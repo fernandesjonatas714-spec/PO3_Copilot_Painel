@@ -21,7 +21,7 @@ class LivePipelineUnitTests(unittest.TestCase):
         row={"time":int((now-timedelta(minutes=2)).timestamp()),"open":100,"high":101,"low":99,"close":100.5}
         snap=SimpleNamespace(symbol="WIN",as_of=now,last_price=100.5,connected=True,source="fake",bars={"M1":[{"time":now-timedelta(minutes=2),"open":100,"high":101,"low":99,"close":100.5}]},levels={},zones={},events=[],notes=[],account={},macro={})
         def provider(cutoff): return snap, {"calendar":{"available":False},"news":{"headlines":[],"statuses":[]}}
-        run_worker(CollectorConfig("WIN",str(db),poll_seconds=1),FakeMT5(row),Event(),max_cycles=1,snapshot_provider=provider)
+        run_worker(CollectorConfig("WIN",str(db),poll_seconds=1,max_feed_lag_seconds=300),FakeMT5(row),Event(),max_cycles=1,snapshot_provider=provider)
         states=list_states(str(db),"WIN")
         self.assertEqual(len(states),1)
         self.assertIn(states[0]["cutoff_at_utc"], states[0]["state_json"])

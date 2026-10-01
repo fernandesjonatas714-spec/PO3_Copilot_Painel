@@ -37,9 +37,9 @@ class V2GapOutcomeTests(unittest.TestCase):
         bars=[{"timestamp_utc":cut+timedelta(minutes=i),"high":100+i,"low":100-i,"close":100+i} for i in range(1,61)]
         rows=calculate_outcomes(state_id=1,symbol="WIN",cutoff_at_utc=cut,start_price=100,bars=bars)
         self.assertEqual([x["horizon_code"] for x in rows],["5m","15m","30m","60m"])
-        self.assertEqual(rows[0]["future_price"],105)
-        self.assertEqual(rows[1]["future_high"],115)
-        self.assertEqual(rows[2]["low_delta"],-30)
+        self.assertEqual(rows[0]["future_price"],104)
+        self.assertEqual(rows[1]["future_high"],114)
+        self.assertEqual(rows[2]["low_delta"],-29)
         self.assertEqual(rows[3]["status"],"DISPONIVEL")
 
 if __name__=="__main__": unittest.main()
