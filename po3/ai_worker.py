@@ -70,7 +70,13 @@ def run_ai_worker(config: AIWorkerConfig, stop_event: Event | None = None, max_c
             if stop_file and os.path.exists(stop_file):
                 stop_event.set()
                 break
-            if SHADOW_MODE_ENABLED and shadow_runner is not None:
+            if AUTO_DECISION_ENGINE and not lease_lost.is_set() and not stop_event.is_set():
+                try:
+                    from po3.auto_decision import process_pending_auto_decisions
+                    process_pending_auto_decisions(config.db_path, symbol=config.symbol, limit=1)
+                except Exception as exc:
+                    print(f"AI Auto Decision: {type(exc).__name__}: {exc}", flush=True)
+            if SHADOW_MODE_ENABLED and shadow_runner is not None and not lease_lost.is_set() and not stop_event.is_set():
                 try:
                     from po3.shadow_mode import process_pending_shadow_states
                     process_pending_shadow_states(
@@ -81,12 +87,6 @@ def run_ai_worker(config: AIWorkerConfig, stop_event: Event | None = None, max_c
                     )
                 except Exception as exc:
                     print(f"AI Shadow: {type(exc).__name__}: {exc}", flush=True)
-            if AUTO_DECISION_ENGINE and not lease_lost.is_set() and not stop_event.is_set():
-                try:
-                    from po3.auto_decision import process_pending_auto_decisions
-                    process_pending_auto_decisions(config.db_path, symbol=config.symbol, limit=1)
-                except Exception as exc:
-                    print(f"AI Auto Decision: {type(exc).__name__}: {exc}", flush=True)
             if lease_lost.is_set():
                 raise RuntimeError("Lease do AI worker perdido")
             cycles += 1

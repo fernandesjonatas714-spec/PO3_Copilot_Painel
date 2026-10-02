@@ -214,7 +214,7 @@ def process_pending_auto_decisions(
                 LEFT JOIN official_decision_runs o ON o.market_state_id=s.id
                   AND o.decision_engine_version=? AND o.prompt_version=? AND o.model_configured=?
                 WHERE {' AND '.join(where)}
-                ORDER BY s.cutoff_at_utc DESC, s.id DESC LIMIT ?""",
+                ORDER BY s.cutoff_at_utc ASC, s.id ASC LIMIT ?""",
             tuple(args),
         ).fetchall()
     finally:

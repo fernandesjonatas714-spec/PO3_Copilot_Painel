@@ -81,6 +81,11 @@ class O4StructuredFallbackTests(unittest.TestCase):
         self.assertIn('lease_name: str = "po3-ai"', source)
         self.assertNotIn("observed_outcomes", source)
 
+    def test_ai_worker_prioritizes_auto_decision_before_shadow(self):
+        source = Path(__file__).parents[1].joinpath("po3", "ai_worker.py").read_text(encoding="utf-8")
+        self.assertLess(source.index("process_pending_auto_decisions"),
+                        source.index("process_pending_shadow_states"))
+
     def test_ai_heartbeat_survives_slow_ai_call_beyond_lease_ttl(self):
         from po3.ai_worker import AIWorkerConfig, run_ai_worker
         from po3.storage.migrations import migrate

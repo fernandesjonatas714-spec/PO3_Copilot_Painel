@@ -67,6 +67,56 @@ class O4AutoDecisionTests(unittest.TestCase):
         self.assertEqual([row[0] for row in rows], [1, 2])
         self.assertEqual(rows[0][1:], (DECISION_ENGINE_VERSION, PROMPT_VERSION))
 
+    def test_pending_queue_is_fifo_and_does_not_starve_old_states(self):
+        cutoffs = {
+            62: "2026-01-01T10:00:00+00:00",
+            63: "2026-01-01T10:05:00+00:00",
+            64: "2026-01-01T10:10:00+00:00",
+        }
+        ids = {}
+        for key in (64, 63, 62):
+            ids[key] = insert_market_state(self._state(cutoffs[key]), self.path,
+                                            cutoff_at_utc=cutoffs[key], symbol="WINV26")
+        result = {"decisoes": [], "gate": {"status": "BLOQUEADO"},
+                  "consenso": {"status": "NAO_EXECUTADA"},
+                  "erro": "DADOS_CRITICOS_AUSENTES"}
+        with patch("po3.auto_decision._runner", return_value=(result, None)), \
+             patch("po3.auto_decision.configured_model_name", return_value="modelo-free"):
+            selected = [process_pending_auto_decisions(self.path, symbol="WINV26", limit=1)
+                        for _ in range(3)]
+        with sqlite3.connect(self.path) as conn:
+            order = [row[0] for row in conn.execute(
+                "SELECT market_state_id FROM official_decision_runs ORDER BY cutoff_at_utc ASC")]
+        self.assertEqual(order, [ids[62], ids[63], ids[64]])
+
+    def test_pending_queue_selects_oldest_when_middle_is_already_processed(self):
+        cutoffs = {
+            62: "2026-01-01T10:00:00+00:00",
+            63: "2026-01-01T10:05:00+00:00",
+            64: "2026-01-01T10:10:00+00:00",
+        }
+        ids = {key: insert_market_state(self._state(value), self.path,
+                                         cutoff_at_utc=value, symbol="WINV26")
+               for key, value in cutoffs.items()}
+        result = {"decisoes": [], "gate": {"status": "BLOQUEADO"},
+                  "consenso": {"status": "NAO_EXECUTADA"},
+                  "erro": "DADOS_CRITICOS_AUSENTES"}
+        with patch("po3.auto_decision._runner", return_value=(result, None)), \
+             patch("po3.auto_decision.configured_model_name", return_value="modelo-free"):
+            process_pending_auto_decisions(self.path, symbol="WINV26", limit=1)
+            # Recria o cenário: o estado do meio fica processado primeiro.
+            with sqlite3.connect(self.path) as conn:
+                conn.execute("DELETE FROM official_decision_runs WHERE market_state_id IN (?,?)",
+                             (ids[62], ids[64]))
+                conn.commit()
+            selected = process_pending_auto_decisions(self.path, symbol="WINV26", limit=1)
+        with sqlite3.connect(self.path) as conn:
+            selected_state = conn.execute(
+                "SELECT market_state_id FROM official_decision_runs WHERE id=?",
+                (selected["results"][0]["id"],),
+            ).fetchone()[0]
+        self.assertEqual(selected_state, ids[62])
+
     def test_official_path_does_not_use_outcomes(self):
         source = Path(__file__).parents[1].joinpath("po3", "auto_decision.py").read_text(encoding="utf-8")
         self.assertNotIn("observed_outcomes", source)
