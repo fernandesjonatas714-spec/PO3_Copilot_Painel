@@ -605,61 +605,147 @@ def _supervisor_ai_text(snapshot: dict) -> str | None:
     return text
 
 
+def _local_time(value: str | None) -> str:
+    if not value:
+        return "—"
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone().strftime("%H:%M")
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _display_status(value: str | None) -> str:
+    return {"OPERACAO_NORMAL": "Operação normal", "VALIDANDO_CAUSALIDADE": "Validando causalidade",
+            "AGUARDANDO_SESSAO": "Aguardando sessão", "ATENCAO_FEED": "Atenção ao feed",
+            "ATENCAO_CLOCK": "Atenção ao clock", "ATENCAO_LEASE": "Atenção ao lease",
+            "ATENCAO_AUTO_DECISION": "Atenção à IA oficial", "ATENCAO_SHADOW": "Atenção ao Jev",
+            "ATENCAO_BANCO": "Atenção ao banco"}.get(str(value), str(value or "Indisponível").replace("_", " ").title())
+
+
+def _decision_label(value: str | None) -> str:
+    return {"CONTEXTO_COMPRADOR": "Comprador", "CONTEXTO_VENDEDOR": "Vendedor",
+            "AGUARDAR": "Aguardar", "SEM_SETUP": "Sem setup", "INDETERMINADO": "Indeterminado",
+            "REVISAO": "Revisão", "DIVERGENCIA": "Divergência", "CONSENSO": "Consenso",
+            "ALTA": "Alta", "MEDIA": "Média", "MÉDIA": "Média", "BAIXA": "Baixa"}.get(str(value), str(value or "Indisponível"))
+
+
+def _latest_jev(db_path: str, symbol: str) -> dict:
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM jev_shadow_runs WHERE symbol=? ORDER BY cutoff_at_utc DESC,id DESC LIMIT 1", (symbol,)).fetchone()
+            return dict(row) if row else {}
+    except sqlite3.Error:
+        return {}
+
+
+def _render_diagnostic(snapshot: dict, symbol: str) -> None:
+    db_path = os.path.join(os.path.dirname(__file__), "data", "po3_learning.sqlite")
+    collector = snapshot.get("collector", {})
+    latest = snapshot.get("latest_market_state") or {}
+    o1 = snapshot.get("o1_validation", {})
+    security = snapshot.get("security", {})
+    jev = _latest_jev(db_path, symbol)
+    with st.expander("Diagnóstico técnico", expanded=False):
+        st.markdown("**Collector**")
+        st.write({"Status": collector.get("status"), "Feed": collector.get("feed_liveness_status"),
+                  "Atraso (s)": collector.get("feed_lag_seconds"), "Último M1": collector.get("last_closed_at_utc"),
+                  "Último tick": collector.get("normalized_tick_at_utc"),
+                  "Clock": collector.get("clock_alignment_status"), "Offset (s)": collector.get("detected_offset_seconds")})
+        st.markdown("**MarketState**")
+        st.write({"ID": latest.get("id"), "Cutoff UTC": latest.get("cutoff_at_utc"),
+                  "Open bar start": latest.get("start_bar_open_time"), "Start price": latest.get("start_price"),
+                  "Start price status": latest.get("start_price_status"), "State hash": latest.get("state_hash")})
+        st.markdown("**Validação O1**")
+        st.write({"Status": o1.get("status"), "Estados válidos": f"{o1.get('valid_states', 0)}/{o1.get('required_states', 3)}",
+                  "State IDs": o1.get("state_ids", []), "Detalhe": o1.get("details")})
+        st.markdown("**Banco / Outcomes**")
+        db = snapshot.get("database", {})
+        outcomes = snapshot.get("outcomes", {})
+        st.write({"Integridade": db.get("integrity_status"), "Market bars M1": db.get("market_bars_m1", 0),
+                  "MarketStates": db.get("market_states", 0), "Decision observations": db.get("decision_observations", 0),
+                  "Outcomes": db.get("observed_outcomes", 0), "Shadow runs": db.get("shadow_runs", 0),
+                  "Disponíveis": outcomes.get("por_status", {}).get("DISPONIVEL", 0),
+                  "Pendentes": outcomes.get("por_status", {}).get("PENDENTE", 0),
+                  "Pendente dados": outcomes.get("por_status", {}).get("PENDENTE_DADOS", 0),
+                  "5m": outcomes.get("por_horizon", {}).get("5m", 0), "15m": outcomes.get("por_horizon", {}).get("15m", 0),
+                  "30m": outcomes.get("por_horizon", {}).get("30m", 0), "60m": outcomes.get("por_horizon", {}).get("60m", 0)})
+        st.markdown("**Workers / leases**")
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                leases = [dict(row) for row in conn.execute("SELECT collector_name,owner_id,heartbeat_at,expires_at FROM collector_leases WHERE symbol=? ORDER BY collector_name", (symbol,))]
+            st.dataframe(leases, hide_index=True, width="stretch")
+        except sqlite3.Error:
+            st.caption("Leases indisponíveis.")
+        st.markdown("**Flags**")
+        st.write({key: security.get(key) for key in ("AUTO_DECISION_ENGINE", "SHADOW_MODE_ENABLED", "CALIBRATION_ENABLED", "MODEL_BENCHMARK_ENABLED", "REPLAY_ENABLED")})
+        st.markdown("**Shadow técnico**")
+        st.write({key: jev.get(key) for key in ("id", "market_state_id", "cutoff_at_utc", "status", "created_at_utc", "finished_at_utc", "error_type", "error_message")})
+
+
 def render_operational_supervisor(symbol: str) -> None:
-    """Bloco compacto e somente leitura; a UI não inicia nem altera a coleta."""
+    """Visão principal compacta e diagnóstico técnico somente leitura."""
     db_path = os.path.join(os.path.dirname(__file__), "data", "po3_learning.sqlite")
     try:
         snapshot = build_supervisor_snapshot(db_path, symbol)
     except Exception as exc:
-        with st.container(border=True):
-            st.markdown("**SUPERVISOR V2**")
-            st.error(f"Supervisor indisponível: {type(exc).__name__}")
+        st.error(f"Supervisor indisponível: {type(exc).__name__}")
         return
     session = snapshot["session"]
     collector = snapshot["collector"]
-    latest = snapshot.get("latest_market_state") or {}
-    o1 = snapshot["o1_validation"]
     security = snapshot["security"]
-    pending = sum(v for k, v in snapshot["outcomes"]["por_status"].items() if k in {"PENDENTE", "PENDENTE_DADOS"})
+    official = snapshot.get("official_analysis", {}).get("latest") or {}
+    jev = _latest_jev(db_path, symbol)
+    feed = collector.get("feed_liveness_status") or collector.get("status")
+    collection = "OK" if feed in {"LIVE", "ATUAL", "SEM_NOVO_CANDLE_MERCADO_FECHADO"} else ("ATENÇÃO" if feed else "ERRO")
+    official_status = official.get("status") or "PROCESSANDO"
+    ai_status = "OK" if official_status == "OK" else "PROCESSANDO" if official_status == "PROCESSANDO" else "ERRO" if official_status == "ERRO" else "ATENÇÃO"
     with st.container(border=True):
-        st.markdown("**SUPERVISOR V2**")
-        st.markdown(f"**Estado geral:** `{snapshot['overall_status']}`")
+        st.title(f"PO3 COPILOT — {symbol}")
+        st.subheader("Status")
         cols = st.columns(4)
-        cols[0].caption(f"Sessão: {'ABERTA' if session['market_active'] else 'FECHADA'}")
-        cols[1].caption(f"Feed: {collector.get('feed_liveness_status') or '—'}")
-        cols[2].caption(f"Clock: {collector.get('clock_alignment_status') or '—'}")
-        cols[3].caption(f"Lease: {'ATIVO' if snapshot['lease']['active'] else 'INATIVO'}")
-        st.caption(f"Lease IA: {'ATIVO' if snapshot.get('ai_worker', {}).get('active') else 'INATIVO'}")
-        cols = st.columns(4)
-        cols[0].caption(f"Último M1: {snapshot['latest_m1'].get('timestamp_utc') or '—'}")
-        cols[1].caption(f"MarketState: {latest.get('cutoff_at_utc') or '—'}")
-        cols[2].caption(f"O1 causal: {o1['valid_states']}/{o1['required_states']}")
-        cols[3].caption(f"Outcomes pendentes: {pending}")
-        shadow = snapshot.get("shadow", {})
-        latest_shadow = shadow.get("latest") or {}
-        shadow_state = "ON" if security["SHADOW_MODE_ENABLED"] else "OFF"
-        shadow_detail = f" · último: {latest_shadow.get('status')} ({latest_shadow.get('cutoff_at_utc')})" if latest_shadow else " · sem execução"
-        if latest_shadow.get("error_type"):
-            shadow_detail += f" · erro: {latest_shadow['error_type']}"
-        st.caption(f"Shadow: {shadow_state}{shadow_detail} · Auto Decision: {'ON' if security['AUTO_DECISION_ENGINE'] else 'OFF'}")
-        official = snapshot.get("official_analysis", {}).get("latest") or {}
-        if security["AUTO_DECISION_ENGINE"]:
-            if official:
-                st.markdown(
-                    f"**Última análise oficial:** {official.get('cutoff_at_utc') or '—'} · "
-                    f"Modelo: `{official.get('model_used') or official.get('model_configured') or '—'}` · "
-                    f"Gate: `{official.get('gate_status') or '—'}` · "
-                    f"Consenso: `{official.get('consensus_status') or '—'}` · "
-                    f"Confiança: `{official.get('confidence') or '—'}` · "
-                    f"Contexto: `{official.get('context_operational') or '—'}`"
-                )
-                if official.get("narrative"):
-                    st.markdown(official["narrative"])
-            else:
-                st.caption("Análise oficial automática: aguardando o primeiro MarketState.")
-        ai_text = _supervisor_ai_text(snapshot)
-        if ai_text:
-            st.info(ai_text)
+        cols[0].metric("Status geral", _display_status(snapshot.get("overall_status")))
+        cols[1].metric("Mercado", "ABERTO" if session.get("market_active") else "FECHADO")
+        cols[2].metric("Coleta", collection)
+        cols[3].metric("IA oficial", ai_status)
+        st.subheader("Decisão oficial")
+        context = _decision_label(official.get("context_operational"))
+        st.markdown(f"### {context}")
+        dcols = st.columns(5)
+        dcols[0].metric("Confiança", _decision_label(official.get("confidence")))
+        dcols[1].metric("Gate", _decision_label(official.get("gate_status")))
+        dcols[2].metric("Consenso", _decision_label(official.get("consensus_status")))
+        dcols[3].metric("Modelo", official.get("model_used") or official.get("model_configured") or "Indisponível")
+        dcols[4].metric("Última análise", _local_time(official.get("created_at_utc")))
+        if official.get("narrative"):
+            st.markdown(official["narrative"])
+    alerts = []
+    if session.get("market_active") and feed not in {"LIVE", "ATUAL"}:
+        alerts.append("Feed MT5 atrasado ou indisponível")
+    if collector.get("clock_alignment_status") not in {"ALIGNED", "OFFSET_DETECTED"}:
+        alerts.append("Clock MT5 com alinhamento instável")
+    if not snapshot.get("lease", {}).get("active"):
+        alerts.append("Collector indisponível")
+    if security.get("AUTO_DECISION_ENGINE") and official.get("status") == "ERRO":
+        alerts.append("IA oficial com erro")
+    latest_state = snapshot.get("latest_market_state") or {}
+    try:
+        with sqlite3.connect(db_path) as conn:
+            state_row = conn.execute("SELECT state_json FROM market_states WHERE id=?", (latest_state.get("id"),)).fetchone()
+        quality = json.loads(state_row[0]).get("qualidade_dados", {}) if state_row else {}
+        if quality.get("calendario_disponivel") is False:
+            alerts.append("Calendário indisponível")
+    except (sqlite3.Error, TypeError, ValueError):
+        pass
+    if security.get("SHADOW_MODE_ENABLED") and jev.get("status") == "ERRO":
+        alerts.append("Jev indisponível")
+    if alerts:
+        st.warning(" · ".join(f"⚠ {item}" for item in alerts))
+    _render_diagnostic(snapshot, symbol)
+    ai_text = _supervisor_ai_text(snapshot)
+    if ai_text and alerts:
+        st.caption(ai_text)
 
 
 def render_evaluation(symbol: str) -> None:
@@ -722,20 +808,22 @@ def render_jev_shadow(symbol: str) -> None:
         if row is None:
             st.info("Aguardando o primeiro MarketState elegível.")
             return
-        cols = st.columns(6)
-        cols[0].metric("Status", row["status"])
-        cols[1].metric("Modelo", row["model_used"] or row["model_configured"])
-        cols[2].metric("MarketState", row["market_state_id"])
-        cols[3].metric("Latência", f"{row['duration_seconds'] or 0:.2f}s")
-        cols[4].metric("Input tokens", row["input_tokens"] or 0)
-        cols[5].metric("Custo (US$)", f"{float(row['cost_usd'] or 0):.8f}")
-        if row["status"] != "OK":
-            st.warning(row["error_message"] or row["status"])
-            return
         try:
             answers = json.loads(row["answers_json"] or "[]")
         except (TypeError, ValueError):
             answers = []
+        jev_context = next((item.get("normalized_answer") for item in answers
+                            if item.get("decision_id") == "contexto_operacional"), "—")
+        cols = st.columns(6)
+        cols[0].metric("Status", row["status"])
+        cols[1].metric("Modelo", row["model_used"] or row["model_configured"])
+        cols[2].metric("Contexto Jev", jev_context or "—")
+        cols[3].metric("Acordo Oficial × Jev", "—")
+        cols[4].metric("Latência", f"{row['duration_seconds'] or 0:.2f}s")
+        cols[5].metric("Custo (US$)", f"{float(row['cost_usd'] or 0):.8f}")
+        if row["status"] != "OK":
+            st.warning(row["error_message"] or row["status"])
+            return
         official_items = {}
         if official is not None:
             try:
@@ -754,7 +842,9 @@ def render_jev_shadow(symbol: str) -> None:
             rows.append({"Decisão": key, "Oficial": official_value or "—", "Jev": jev_value or "—",
                          "Acordo": "SIM" if agreement is True else "NÃO" if agreement is False else "—",
                          "Confidence Jev": answer.get("confidence") or "—"})
-        st.dataframe(rows, hide_index=True, width="stretch")
+        cols[3].metric("Acordo Oficial × Jev", f"{comparison.get('exact_agreement_count', 0)}/6")
+        if st.checkbox("Mostrar detalhes das 6 decisões", value=False, key="jev_show_details"):
+            st.dataframe(rows, hide_index=True, width="stretch")
         score = next((answer for answer in answers if answer.get("decision_id") == "risco_evento"), {})
         noul = next((answer for answer in answers if answer.get("decision_id") == "conflito_contexto"), {})
         st.caption(f"Risco evento oficial: {official_items.get('risco_evento', {}).get('decisao', '—')} · Jev: {score.get('normalized_answer', '—')} · diferença: {comparison.get('risk_event_absolute_difference', '—')}")
@@ -769,16 +859,13 @@ with st.sidebar:
     seconds = st.slider("Intervalo de atualização", 5, 60, 15, 5)
     st.caption("Conexão somente leitura. O painel não envia ordens.")
 
-st.markdown('<div class="brand"><div class="brand-mark">P3</div><div><div class="brand-title">PO3 Copilot B3</div><div class="brand-sub">Sinal macro · execução manual</div></div></div>', unsafe_allow_html=True)
-
 @st.fragment(run_every=f"{seconds}s" if auto else None)
 def live():
     try:
         snapshot = read_snapshot(terminal, symbol)
         st.session_state["latest_snapshot"] = snapshot
-        render_panel(snapshot)
     except MT5ReadError as exc:
-        st.error(str(exc)); st.info("Abra o MT5, mantenha o WIN visível e confirme que o terminal está conectado.")
+        st.session_state["snapshot_error"] = str(exc)
 
 @st.fragment(run_every="15s")
 def supervisor_live():
@@ -788,7 +875,6 @@ supervisor_live()
 live()
 render_jev_shadow(symbol)
 if "latest_snapshot" in st.session_state:
-    render_collection_status(symbol)
     render_evaluation(symbol)
 if "latest_snapshot" in st.session_state:
     render_local_chat(st.session_state["latest_snapshot"])
