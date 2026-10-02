@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
@@ -115,6 +116,16 @@ class OperationalSupervisorTests(unittest.TestCase):
         snap = build_supervisor_snapshot(str(self.path), "WINV26", self.now)
         self.assertEqual(snap["o1_validation"]["status"], "APROVADO")
         self.assertEqual(len(snap["o1_validation"]["state_ids"]), 3)
+        self.assertIn("Cadeia causal aprovada", snap["o1_validation"]["details"])
+
+    def test_o1_four_valid_states_with_gap_never_show_more_than_two(self):
+        cutoffs = [self.now - timedelta(minutes=27), self.now - timedelta(minutes=22), self.now - timedelta(minutes=12), self.now - timedelta(minutes=7)]
+        for cutoff in cutoffs:
+            self._bar(cutoff - timedelta(minutes=1))
+            self._state(cutoff)
+        snap = build_supervisor_snapshot(str(self.path), "WINV26", self.now)
+        self.assertNotEqual(snap["o1_validation"]["status"], "APROVADO")
+        self.assertLessEqual(snap["o1_validation"]["valid_states"], 2)
 
     def test_o1_rejects_wrong_start_bar_and_price(self):
         for i in range(3):
@@ -156,6 +167,33 @@ class OperationalSupervisorTests(unittest.TestCase):
         state.update({"last_supervisor_hash": decision["hash"], "last_supervisor_status": "ATENCAO_FEED", "last_supervisor_ai_at": self.now})
         snap["collector"]["detected_offset_seconds"] = 123
         self.assertFalse(supervisor_ai_gate(snap, state, self.now + timedelta(seconds=30))["should_call"])
+
+    def test_ai_gate_defers_change_and_allows_it_after_cooldown(self):
+        snap_a = build_supervisor_snapshot(str(self.path), "WINV26", self.now)
+        state = {"last_supervisor_hash": operational_state_hash(snap_a), "last_supervisor_status": "AGUARDANDO_SESSAO", "last_supervisor_ai_at": self.now}
+        snap_b = dict(snap_a)
+        snap_b["overall_status"] = "VALIDANDO_CAUSALIDADE"
+        first = supervisor_ai_gate(snap_b, state, self.now + timedelta(seconds=30))
+        self.assertFalse(first["should_call"])
+        state["last_supervisor_status"] = first["status"]
+        second = supervisor_ai_gate(snap_b, state, self.now + timedelta(minutes=5, seconds=1))
+        self.assertTrue(second["should_call"])
+
+    def test_ai_gate_critical_persistent_change_respects_cooldown(self):
+        snap = build_supervisor_snapshot(str(self.path), "WINV26", self.now)
+        snap["overall_status"] = "ATENCAO_FEED"
+        state = {"last_supervisor_hash": "old", "last_supervisor_status": "OPERACAO_NORMAL", "last_supervisor_ai_at": self.now}
+        first = supervisor_ai_gate(snap, state, self.now + timedelta(seconds=1))
+        self.assertTrue(first["should_call"])
+        state.update({"last_supervisor_hash": first["hash"], "last_supervisor_status": first["status"], "last_supervisor_ai_at": self.now + timedelta(seconds=1)})
+        snap["collector"]["feed_liveness_status"] = "LIVE"
+        self.assertFalse(supervisor_ai_gate(snap, state, self.now + timedelta(seconds=30))["should_call"])
+
+    def test_supervisor_fragment_is_fixed_and_has_no_worker_start(self):
+        source = Path(__file__).parents[1].joinpath("macro_app.py").read_text(encoding="utf-8")
+        self.assertIn('@st.fragment(run_every="15s")', source)
+        self.assertIn('run_every=f"{seconds}s" if auto else None', source)
+        self.assertNotIn("po3.launcher", source)
 
     def test_same_hash_is_stable(self):
         snap = build_supervisor_snapshot(str(self.path), "WINV26", self.now)

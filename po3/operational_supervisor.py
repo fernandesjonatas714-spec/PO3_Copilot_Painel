@@ -107,6 +107,21 @@ def _validate_o1(conn: sqlite3.Connection, symbol: str, now: datetime) -> dict:
         validity.append(state_valid)
         if state_valid:
             valid_rows.append(row)
+    max_progress = 0
+    current_progress = 0
+    previous_cutoff: datetime | None = None
+    previous_valid = False
+    for row, state_valid in zip(recent, validity):
+        cutoff = _utc(row["cutoff_at_utc"])
+        if state_valid and previous_valid and cutoff and previous_cutoff and cutoff - previous_cutoff == timedelta(minutes=5):
+            current_progress = min(3, current_progress + 1)
+        elif state_valid:
+            current_progress = 1
+        else:
+            current_progress = 0
+        max_progress = max(max_progress, current_progress)
+        previous_cutoff = cutoff
+        previous_valid = state_valid
     chain = []
     for index in range(max(0, len(recent) - 2)):
         window = recent[index:index + 3]
@@ -121,11 +136,15 @@ def _validate_o1(conn: sqlite3.Connection, symbol: str, now: datetime) -> dict:
         chain = window
         break
     approved = len(chain) == 3
+    details = (
+        f"Cadeia causal aprovada: {[int(row['id']) for row in chain]}."
+        if approved else (reasons or ("Aguardando três MarketStates causais válidos." if recent else "Aguardando dados."))
+    )
     return {
         "status": "APROVADO" if approved else ("VALIDANDO_CAUSALIDADE" if recent else "AGUARDANDO_DADOS"),
-        "valid_states": len(chain) if approved else len(valid_rows),
+        "valid_states": min(3, max_progress),
         "required_states": 3,
-        "details": reasons or ("Três MarketStates causais válidos." if approved else "Aguardando três MarketStates causais válidos."),
+        "details": details,
         "state_ids": [int(row["id"]) for row in chain],
     }
 

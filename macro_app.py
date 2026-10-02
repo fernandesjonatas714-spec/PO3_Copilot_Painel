@@ -585,7 +585,6 @@ def _supervisor_ai_text(snapshot: dict) -> str | None:
     now = datetime.now().astimezone()
     decision = supervisor_ai_gate(snapshot, st.session_state, now)
     if not decision["should_call"]:
-        st.session_state["last_supervisor_hash"] = decision["hash"]
         st.session_state["last_supervisor_status"] = decision["status"]
         return st.session_state.get("last_supervisor_ai_text")
     try:
@@ -696,7 +695,7 @@ def live():
     except MT5ReadError as exc:
         st.error(str(exc)); st.info("Abra o MT5, mantenha o WIN visível e confirme que o terminal está conectado.")
 
-@st.fragment(run_every=f"{seconds}s" if auto else None)
+@st.fragment(run_every="15s")
 def supervisor_live():
     render_operational_supervisor(symbol)
 
