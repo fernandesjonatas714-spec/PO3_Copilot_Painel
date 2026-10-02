@@ -16,7 +16,7 @@ from po3.decision_engine.narrative import generate_narrative
 from po3.learning_store import record_ai_error, recent_analyses, save_analysis
 from po3.analytics import build_evaluation_report
 from po3.v2_config import EVALUATION_ENGINE_ENABLED, SUPERVISOR_AI_ENABLED
-from po3.operational_supervisor import build_supervisor_snapshot, operational_state_hash, supervisor_ai_context
+from po3.operational_supervisor import build_supervisor_snapshot, supervisor_ai_context, supervisor_ai_gate
 
 DEFAULT_TERMINAL = r"C:\Program Files\Clear Investimentos MT5 Terminal\terminal64.exe"
 
@@ -583,13 +583,10 @@ def _supervisor_ai_text(snapshot: dict) -> str | None:
     if not SUPERVISOR_AI_ENABLED:
         return None
     now = datetime.now().astimezone()
-    current_hash = operational_state_hash(snapshot)
-    previous_hash = st.session_state.get("last_supervisor_hash")
-    previous_at = st.session_state.get("last_supervisor_ai_at")
-    critical = snapshot.get("overall_status") in {"ATENCAO_SEGURANCA", "ATENCAO_BANCO", "ATENCAO_CLOCK", "ATENCAO_FEED"}
-    if current_hash == previous_hash and st.session_state.get("last_supervisor_ai_text"):
-        return st.session_state["last_supervisor_ai_text"]
-    if previous_at and not critical and (now - previous_at).total_seconds() < 300:
+    decision = supervisor_ai_gate(snapshot, st.session_state, now)
+    if not decision["should_call"]:
+        st.session_state["last_supervisor_hash"] = decision["hash"]
+        st.session_state["last_supervisor_status"] = decision["status"]
         return st.session_state.get("last_supervisor_ai_text")
     try:
         text = send_message(
@@ -599,7 +596,7 @@ def _supervisor_ai_text(snapshot: dict) -> str | None:
         )
     except Exception as exc:
         text = f"A explicação da IA está indisponível ({type(exc).__name__}); o estado determinístico continua ativo."
-    st.session_state["last_supervisor_hash"] = current_hash
+    st.session_state["last_supervisor_hash"] = decision["hash"]
     st.session_state["last_supervisor_ai_at"] = now
     st.session_state["last_supervisor_ai_text"] = text
     return text
@@ -695,11 +692,15 @@ def live():
     try:
         snapshot = read_snapshot(terminal, symbol)
         st.session_state["latest_snapshot"] = snapshot
-        render_operational_supervisor(symbol)
         render_panel(snapshot)
     except MT5ReadError as exc:
         st.error(str(exc)); st.info("Abra o MT5, mantenha o WIN visível e confirme que o terminal está conectado.")
 
+@st.fragment(run_every=f"{seconds}s" if auto else None)
+def supervisor_live():
+    render_operational_supervisor(symbol)
+
+supervisor_live()
 live()
 if "latest_snapshot" in st.session_state:
     render_collection_status(symbol)

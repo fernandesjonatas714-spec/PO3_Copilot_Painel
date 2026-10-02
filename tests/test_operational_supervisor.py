@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from po3.operational_supervisor import build_supervisor_snapshot, operational_state_hash
+from po3.operational_supervisor import build_supervisor_snapshot, operational_state_hash, supervisor_ai_gate
 from po3.storage.migrations import migrate
 from po3.v2_config import SUPERVISOR_AI_ENABLED
 
@@ -100,13 +100,21 @@ class OperationalSupervisorTests(unittest.TestCase):
         self.assertEqual(snap["o1_validation"]["valid_states"], 3)
 
     def test_o1_rejects_duplicate_spacing_start_and_missing_bar(self):
-        cutoffs = [self.now - timedelta(minutes=12), self.now - timedelta(minutes=6), self.now - timedelta(minutes=1)]
-        for cutoff in cutoffs:
-            if cutoff != cutoffs[-1]:
-                self._bar(cutoff - timedelta(minutes=1))
-            self._state(cutoff)
+        cutoffs = [self.now - timedelta(minutes=22), self.now - timedelta(minutes=17), self.now - timedelta(minutes=12), self.now - timedelta(minutes=7)]
+        for index, cutoff in enumerate(cutoffs):
+            self._bar(cutoff - timedelta(minutes=1))
+            self._state(cutoff, start_bar=cutoff - timedelta(minutes=2) if index == 1 else None)
         snap = build_supervisor_snapshot(str(self.path), "WINV26", self.now)
         self.assertNotEqual(snap["o1_validation"]["status"], "APROVADO")
+
+    def test_o1_moving_window_uses_three_consecutive_states(self):
+        cutoffs = [self.now - timedelta(minutes=22), self.now - timedelta(minutes=17), self.now - timedelta(minutes=12), self.now - timedelta(minutes=7), self.now - timedelta(minutes=2)]
+        for index, cutoff in enumerate(cutoffs):
+            self._bar(cutoff - timedelta(minutes=1))
+            self._state(cutoff, start_bar=cutoff - timedelta(minutes=2) if index == 1 else None)
+        snap = build_supervisor_snapshot(str(self.path), "WINV26", self.now)
+        self.assertEqual(snap["o1_validation"]["status"], "APROVADO")
+        self.assertEqual(len(snap["o1_validation"]["state_ids"]), 3)
 
     def test_o1_rejects_wrong_start_bar_and_price(self):
         for i in range(3):
@@ -116,12 +124,38 @@ class OperationalSupervisorTests(unittest.TestCase):
         snap = build_supervisor_snapshot(str(self.path), "WINV26", self.now)
         self.assertNotEqual(snap["o1_validation"]["status"], "APROVADO")
 
+    def test_o1_rejects_missing_exact_start_bar_without_fallback(self):
+        for i in range(3):
+            cutoff = self.now - timedelta(minutes=12 - i * 5)
+            self._state(cutoff)
+        snap = build_supervisor_snapshot(str(self.path), "WINV26", self.now)
+        self.assertNotEqual(snap["o1_validation"]["status"], "APROVADO")
+
     def test_security_tables_read_only_and_ai_default_off(self):
         before = {t: self._conn().execute(f"select count(*) from {t}").fetchone()[0] for t in ("decision_observations", "shadow_runs")}
         snap = build_supervisor_snapshot(str(self.path), "WINV26", self.now)
         self.assertFalse(SUPERVISOR_AI_ENABLED)
         self.assertEqual(before["decision_observations"], snap["database"]["decision_observations"])
         self.assertEqual(before["shadow_runs"], snap["database"]["shadow_runs"])
+
+    def test_supervisor_has_explicit_sao_paulo_timezone(self):
+        snap = build_supervisor_snapshot(str(self.path), "WINV26", self.now)
+        self.assertIn("-03:00", snap["session"]["local_time"])
+
+    def test_ai_gate_same_hash_does_not_call(self):
+        snap = build_supervisor_snapshot(str(self.path), "WINV26", self.now)
+        state = {"last_supervisor_hash": operational_state_hash(snap), "last_supervisor_status": snap["overall_status"], "last_supervisor_ai_at": self.now - timedelta(minutes=1)}
+        self.assertFalse(supervisor_ai_gate(snap, state, self.now)["should_call"])
+
+    def test_ai_gate_normal_change_calls_and_critical_transition_bypasses_once(self):
+        snap = build_supervisor_snapshot(str(self.path), "WINV26", self.now)
+        state = {"last_supervisor_hash": "old", "last_supervisor_status": "OPERACAO_NORMAL", "last_supervisor_ai_at": self.now - timedelta(seconds=10)}
+        snap["overall_status"] = "ATENCAO_FEED"
+        decision = supervisor_ai_gate(snap, state, self.now)
+        self.assertTrue(decision["should_call"])
+        state.update({"last_supervisor_hash": decision["hash"], "last_supervisor_status": "ATENCAO_FEED", "last_supervisor_ai_at": self.now})
+        snap["collector"]["detected_offset_seconds"] = 123
+        self.assertFalse(supervisor_ai_gate(snap, state, self.now + timedelta(seconds=30))["should_call"])
 
     def test_same_hash_is_stable(self):
         snap = build_supervisor_snapshot(str(self.path), "WINV26", self.now)

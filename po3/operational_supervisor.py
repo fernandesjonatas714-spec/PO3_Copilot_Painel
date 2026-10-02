@@ -7,11 +7,13 @@ import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from po3.collection.freshness import is_market_active
 from po3.v2_config import flags
 
 UTC = timezone.utc
+BRT = ZoneInfo("America/Sao_Paulo")
 SAFE_CLOCK_STATUSES = {"ALIGNED", "OFFSET_DETECTED"}
 EXPECTED_HORIZONS = ("5m", "15m", "30m", "60m")
 
@@ -73,8 +75,7 @@ def _validate_o1(conn: sqlite3.Connection, symbol: str, now: datetime) -> dict:
             recent.append(row)
     reasons: list[str] = []
     valid_rows = []
-    seen: set[str] = set()
-    previous: datetime | None = None
+    validity: list[bool] = []
     for row in recent:
         cutoff = _utc(row["cutoff_at_utc"])
         payload = _state_payload(row)
@@ -85,17 +86,14 @@ def _validate_o1(conn: sqlite3.Connection, symbol: str, now: datetime) -> dict:
         if not row["state_hash"]:
             reasons.append(f"state {row['id']}: hash ausente")
             state_valid = False
-        if cutoff is None or cutoff in seen:
-            reasons.append(f"state {row['id']}: cutoff duplicado ou inválido")
-            state_valid = False
-        if previous is not None and cutoff and cutoff - previous != timedelta(minutes=5):
-            reasons.append(f"state {row['id']}: espaçamento diferente de 5 minutos")
+        if cutoff is None:
+            reasons.append(f"state {row['id']}: cutoff inválido")
             state_valid = False
         if expected and start_bar != expected:
             reasons.append(f"state {row['id']}: start_bar incompatível")
             state_valid = False
-        if status not in {"DISPONIVEL", "INDISPONIVEL"}:
-            reasons.append(f"state {row['id']}: start_price_status inválido")
+        if status != "DISPONIVEL":
+            reasons.append(f"state {row['id']}: start_price indisponível para validação causal")
             state_valid = False
         if status == "DISPONIVEL" and cutoff and start_bar:
             expected_close = _latest_m1_close(conn, symbol, start_bar)
@@ -106,18 +104,29 @@ def _validate_o1(conn: sqlite3.Connection, symbol: str, now: datetime) -> dict:
             if expected_close is None or actual_price is None or actual_price != expected_close:
                 reasons.append(f"state {row['id']}: start_price não coincide com M1 exato")
                 state_valid = False
-        if cutoff:
-            seen.add(cutoff)
-            previous = cutoff
+        validity.append(state_valid)
         if state_valid:
             valid_rows.append(row)
-    approved = len(valid_rows) >= 3 and len(recent) >= 3
+    chain = []
+    for index in range(max(0, len(recent) - 2)):
+        window = recent[index:index + 3]
+        if not all(validity[index:index + 3]):
+            continue
+        cutoffs = [_utc(row["cutoff_at_utc"]) for row in window]
+        if any(cutoff is None for cutoff in cutoffs) or any(
+            cutoffs[n + 1] - cutoffs[n] != timedelta(minutes=5) for n in range(2)
+        ):
+            reasons.append(f"cadeia iniciada no state {window[0]['id']}: espaçamento inválido")
+            continue
+        chain = window
+        break
+    approved = len(chain) == 3
     return {
         "status": "APROVADO" if approved else ("VALIDANDO_CAUSALIDADE" if recent else "AGUARDANDO_DADOS"),
-        "valid_states": len(valid_rows),
+        "valid_states": len(chain) if approved else len(valid_rows),
         "required_states": 3,
         "details": reasons or ("Três MarketStates causais válidos." if approved else "Aguardando três MarketStates causais válidos."),
-        "state_ids": [int(row["id"]) for row in valid_rows],
+        "state_ids": [int(row["id"]) for row in chain],
     }
 
 
@@ -177,7 +186,7 @@ def build_supervisor_snapshot(db_path: str, symbol: str, now_utc: datetime | Non
         overall = "OPERACAO_NORMAL"
     else:
         overall = "VALIDANDO_CAUSALIDADE"
-    local = now.astimezone().isoformat()
+    local = now.astimezone(BRT).isoformat()
     snapshot = {
         "timestamp_utc": now.isoformat(), "symbol": symbol,
         "session": {"market_active": active, "local_time": local, "session_status": "ABERTA" if active else "FECHADA"},
@@ -191,8 +200,38 @@ def build_supervisor_snapshot(db_path: str, symbol: str, now_utc: datetime | Non
 
 
 def operational_state_hash(snapshot: dict) -> str:
-    relevant = {key: snapshot.get(key) for key in ("symbol", "session", "collector", "lease", "latest_m1", "latest_market_state", "outcomes", "security", "o1_validation", "overall_status")}
+    collector = snapshot.get("collector", {})
+    relevant = {
+        "symbol": snapshot.get("symbol"),
+        "session": {"market_active": snapshot.get("session", {}).get("market_active"), "session_status": snapshot.get("session", {}).get("session_status")},
+        "collector": {key: collector.get(key) for key in ("status", "feed_liveness_status", "clock_alignment_status")},
+        "lease_active": snapshot.get("lease", {}).get("active"),
+        "latest_market_state": snapshot.get("latest_market_state"),
+        "outcomes": snapshot.get("outcomes", {}),
+        "security": snapshot.get("security", {}),
+        "o1_validation": snapshot.get("o1_validation", {}),
+        "overall_status": snapshot.get("overall_status"),
+    }
     return hashlib.sha256(json.dumps(relevant, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
+
+
+def supervisor_ai_gate(snapshot: dict, state: dict, now: datetime | None = None) -> dict:
+    """Decide se uma narrativa pode ser solicitada, sem chamar a IA."""
+    now = now or datetime.now(UTC)
+    current_hash = operational_state_hash(snapshot)
+    current_status = snapshot.get("overall_status")
+    previous_hash = state.get("last_supervisor_hash")
+    previous_status = state.get("last_supervisor_status")
+    previous_at = state.get("last_supervisor_ai_at")
+    critical = {"ATENCAO_SEGURANCA", "ATENCAO_BANCO", "ATENCAO_CLOCK", "ATENCAO_FEED"}
+    critical_transition = current_status in critical and previous_status is not None and current_status != previous_status
+    if current_hash == previous_hash:
+        return {"should_call": False, "critical_transition": False, "hash": current_hash, "status": current_status}
+    if previous_at:
+        when = _utc(previous_at)
+        if when and (now.astimezone(UTC) - when).total_seconds() < 300 and not critical_transition:
+            return {"should_call": False, "critical_transition": False, "hash": current_hash, "status": current_status}
+    return {"should_call": True, "critical_transition": critical_transition, "hash": current_hash, "status": current_status}
 
 
 def supervisor_ai_context(snapshot: dict) -> str:
