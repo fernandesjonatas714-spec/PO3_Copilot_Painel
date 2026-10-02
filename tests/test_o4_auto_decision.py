@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -220,6 +221,56 @@ class O4AutoDecisionTests(unittest.TestCase):
         ai_worker = Path(__file__).parents[1].joinpath("po3", "ai_worker.py").read_text(encoding="utf-8")
         self.assertIn("process_pending_auto_decisions", ai_worker)
         self.assertNotIn("order_send", collector)
+        self.assertIn('OFFICIAL_ANALYSIS_MAX_SECONDS=120', launcher)
+
+    def test_total_analysis_budget_finishes_run_without_narrative(self):
+        state_id = insert_market_state(self._state(), self.path,
+                                       cutoff_at_utc="2026-01-01T10:00:00+00:00", symbol="WINV26")
+        def slow_runner(state, *, deadline=None):
+            time.sleep(0.03)
+            return ({"decisoes": [], "gate": {"status": "REVISAO"},
+                     "consenso": {"status": "NAO_EXECUTADA"}}, None)
+        with patch("po3.auto_decision._runner", side_effect=slow_runner), \
+             patch("po3.auto_decision.OFFICIAL_ANALYSIS_MAX_SECONDS", 0.01), \
+             patch("po3.auto_decision.configured_model_name", return_value="modelo-free"):
+            result = run_auto_decision_for_market_state(self.path, state_id, model_configured="modelo-free")
+        self.assertEqual(result["error_type"], "OFFICIAL_ANALYSIS_TIMEOUT")
+        with sqlite3.connect(self.path) as conn:
+            row = conn.execute("SELECT status,decision_status,narrative_status,narrative,error_type FROM official_decision_runs").fetchone()
+        self.assertEqual(row, ("ERRO", "ERRO", "NAO_EXECUTADA", None, "OFFICIAL_ANALYSIS_TIMEOUT"))
+
+    def test_timeout_allows_fifo_next_state_and_no_duplicate(self):
+        first = insert_market_state(self._state(), self.path, cutoff_at_utc="2026-01-01T10:00:00+00:00", symbol="WINV26")
+        second = insert_market_state(self._state("2026-01-01T10:05:00+00:00"), self.path, cutoff_at_utc="2026-01-01T10:05:00+00:00", symbol="WINV26")
+        calls = []
+        def slow(state, *, deadline=None):
+            calls.append(state["timestamp"])
+            time.sleep(0.02)
+            return ({"decisoes": [], "gate": {"status": "REVISAO"},
+                     "consenso": {"status": "NAO_EXECUTADA"}}, None)
+        with patch("po3.auto_decision._runner", side_effect=slow), \
+             patch("po3.auto_decision.OFFICIAL_ANALYSIS_MAX_SECONDS", 0.01), \
+             patch("po3.auto_decision.configured_model_name", return_value="modelo-free"):
+            process_pending_auto_decisions(self.path, symbol="WINV26", limit=1)
+            process_pending_auto_decisions(self.path, symbol="WINV26", limit=1)
+        with sqlite3.connect(self.path) as conn:
+            rows = conn.execute("SELECT market_state_id,status FROM official_decision_runs ORDER BY market_state_id").fetchall()
+        self.assertEqual([r[0] for r in rows], [first, second])
+        self.assertEqual(len(rows), 2)
+
+    def test_timeout_does_not_release_ai_lease(self):
+        from po3.storage.market_repository import acquire_lease
+        state_id = insert_market_state(self._state(), self.path,
+                                       cutoff_at_utc="2026-01-01T10:00:00+00:00", symbol="WINV26")
+        owner = acquire_lease("po3-ai", "WINV26", self.path, "owner", ttl_seconds=120)
+        with patch("po3.auto_decision._runner", side_effect=lambda state, **kwargs: (time.sleep(0.02), ({}, None))[1]), \
+             patch("po3.auto_decision.OFFICIAL_ANALYSIS_MAX_SECONDS", 0.01), \
+             patch("po3.auto_decision.configured_model_name", return_value="modelo-free"):
+            result = run_auto_decision_for_market_state(self.path, state_id, model_configured="modelo-free", worker_owner_id=owner)
+        with sqlite3.connect(self.path) as conn:
+            lease = conn.execute("SELECT owner_id FROM collector_leases WHERE collector_name='po3-ai'").fetchone()
+        self.assertEqual(result["error_type"], "OFFICIAL_ANALYSIS_TIMEOUT")
+        self.assertEqual(lease[0], owner)
 
 
 if __name__ == "__main__":

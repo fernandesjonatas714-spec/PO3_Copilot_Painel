@@ -14,6 +14,7 @@ if exist "%PAINEL_DIR%.env" (
 if not defined MT5_TERMINAL_PATH set "MT5_TERMINAL_PATH=C:\Program Files\Clear Investimentos MT5 Terminal\terminal64.exe"
 set "AUTO_DATA_COLLECTION=true"
 set "AUTO_DECISION_ENGINE=true"
+if not defined OFFICIAL_ANALYSIS_MAX_SECONDS set "OFFICIAL_ANALYSIS_MAX_SECONDS=120"
 set "SUPERVISOR_AI_ENABLED=true"
 set "SHADOW_MODE_ENABLED=true"
 if not defined JEV_SHADOW_ENABLED set "JEV_SHADOW_ENABLED=false"

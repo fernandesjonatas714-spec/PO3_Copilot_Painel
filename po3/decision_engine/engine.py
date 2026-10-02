@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import inspect
 import json
 import re
+import time
 from datetime import datetime
 
 from .market_state import MarketState, build_market_state
@@ -15,6 +16,10 @@ from .consensus import compare
 from po3.ai_service import FREE_MODEL_PRIORITY
 
 EXPECTED_DECISION_IDS = {"regime_macro", "contexto_domestico", "contexto_tecnico", "risco_evento", "conflito_contexto", "contexto_operacional"}
+
+
+class AnalysisTimeout(TimeoutError):
+    """Sinaliza que o orçamento total da análise oficial foi excedido."""
 
 @dataclass
 class StructuredAnalysis:
@@ -41,11 +46,16 @@ class StructuredAnalysis:
         return {"versoes": {"decision_engine": DECISION_ENGINE_VERSION, "prompt": PROMPT_VERSION, "schema": SCHEMA_VERSION}, "state": self.state.to_dict(), "validation": self.validation.to_dict(), "decisoes": [x.to_dict() for x in self.decisions], "segunda_analise": [x.to_dict() for x in self.second_decisions], "gate": self.gate.to_dict(), "consenso": self.consensus, "modelo_configurado": self.model_configured, "modelo_utilizado": self.model_used, "model_used": self.model_used, "decision_model_used": self.model_used, "decision_model_attempts": self.model_attempts or [], "decision_fallback_used": self.fallback_used, "decision_repair_used": self.repair_used, "model_attempts": self.model_attempts or [], "fallback_utilizado": self.fallback_used, "segunda_modelo_utilizado": self.second_model_used, "segunda_model_attempts": self.second_model_attempts or [], "segunda_fallback_utilizado": self.second_fallback_used, "reparo_json_utilizado": self.repair_used, "narrative_model_used": self.narrative_model_used, "narrative_fallback_used": self.narrative_fallback_used, "modelo_narrativa_utilizado": self.narrative_model_used, "fallback_narrativa_utilizado": self.narrative_fallback_used, "narrativa": self.narrative, "erro": self.error}
 
 class DecisionEngine:
-    def __init__(self, send_detailed, configured_model):
+    def __init__(self, send_detailed, configured_model, *, deadline: float | None = None):
         self.send_detailed = send_detailed
         self.configured_model = configured_model
         self.last_attempts = []
         self.last_repair_used = False
+        self.deadline = deadline
+
+    def _check_deadline(self) -> None:
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            raise AnalysisTimeout("Orçamento total da análise oficial excedido")
 
     def _supports_model_selection(self) -> bool:
         try:
@@ -57,9 +67,13 @@ class DecisionEngine:
             return False
 
     def _request(self, message: str, model: str):
+        self._check_deadline()
         if self._supports_model_selection():
-            return self.send_detailed(message, model_override=model, allow_model_fallback=False)
-        return self.send_detailed(message)
+            result = self.send_detailed(message, model_override=model, allow_model_fallback=False)
+        else:
+            result = self.send_detailed(message)
+        self._check_deadline()
+        return result
 
     def _parse(self, text, meta):
         match = re.search(r"\{.*\}", text or "", re.S)
@@ -95,9 +109,13 @@ class DecisionEngine:
                     repaired = dict(self._request(build_repair_prompt(result.get("content", ""), str(first_error)), candidate) or {}); repaired.setdefault("model_configured", self.configured_model); repaired.setdefault("model_used", candidate); repaired["fallback_used"] = bool(repaired.get("fallback_used")) or candidate != self.configured_model; repaired["model_attempts"] = list(attempts)
                     try:
                         return self._parse(repaired["content"], repaired), repaired, repair_used_any
+                    except AnalysisTimeout:
+                        raise
                     except Exception as repair_error:
                         last_error = repair_error
             except Exception as exc:
+                if isinstance(exc, AnalysisTimeout):
+                    raise
                 last_error = exc
         raise ValueError("nenhum modelo produziu JSON estruturado valido") from last_error
 
@@ -113,10 +131,15 @@ class DecisionEngine:
             return StructuredAnalysis(state, validation, [], [], gate, {"status": "NAO_EXECUTADA", "divergencias": []}, None, None, False, error="DADOS_CRITICOS_AUSENTES", model_attempts=[])
         try:
             decisions, meta, repaired = self._call(state, validation)
+        except AnalysisTimeout:
+            raise
         except Exception:
             gate = apply_gate(validation, []); return StructuredAnalysis(state, validation, [], [], gate, {"status": "NAO_EXECUTADA", "divergencias": []}, self.configured_model, None, False, error="RESPOSTA_LLM_INVALIDA", repair_used=self.last_repair_used, model_attempts=list(self.last_attempts))
         gate = apply_gate(validation, decisions); second, second_meta, second_repaired = [], {}, False
         if gate.status == "REVISAO" or any(x.confianca == "BAIXA" for x in decisions):
+            self._check_deadline()
             try: second, second_meta, second_repaired = self._call(state, validation)
+            except AnalysisTimeout:
+                raise
             except Exception: second = []
         return StructuredAnalysis(state, validation, decisions, second, gate, compare(decisions, second), meta.get("model_configured"), meta.get("model_used"), bool(meta.get("fallback_used")), error=None, second_model_used=second_meta.get("model_used"), second_fallback_used=bool(second_meta.get("fallback_used")), repair_used=repaired or second_repaired, model_attempts=meta.get("model_attempts", []), second_model_attempts=second_meta.get("model_attempts", []))

@@ -16,11 +16,13 @@ from typing import Any
 
 from po3.ai_service import configured_model_name, send_message_detailed
 from po3.decision_engine.engine import DecisionEngine
+from po3.decision_engine.engine import AnalysisTimeout
 from po3.decision_engine.narrative import generate_narrative
 from po3.decision_engine.schemas import DECISION_ENGINE_VERSION, PROMPT_VERSION, SCHEMA_VERSION
 from po3.shadow_runner import _hydrate_market_state
 from po3.run_recovery import ORPHAN_RUN_STALE_SECONDS, run_is_recoverable
 from po3.storage.migrations import migrate
+from po3.v2_config import OFFICIAL_ANALYSIS_MAX_SECONDS
 
 
 def _utc_now() -> str:
@@ -51,7 +53,7 @@ def _narrative_call(message: str, **kwargs) -> dict[str, Any]:
     )
 
 
-def _runner(state: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+def _runner(state: dict[str, Any], *, deadline: float | None = None) -> tuple[dict[str, Any], str | None]:
     model = configured_model_name()
 
     def decision_call(message: str, *, model_override: str | None = None,
@@ -67,12 +69,14 @@ def _runner(state: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
         )
 
     hydrated = _hydrate_market_state(state)
-    structured = DecisionEngine(decision_call, model).run_market_state(hydrated)
+    engine = DecisionEngine(decision_call, model, deadline=deadline)
+    structured = engine.run_market_state(hydrated)
     result = structured.to_dict()
     # Dados críticos ausentes são um bloqueio factual, não uma análise oficial
     # válida. Portanto não há narrativa nem chamada adicional de IA.
     if structured.error:
         return result, None
+    engine._check_deadline()
     try:
         narrative_model_used = None
         narrative_fallback_used = False
@@ -84,11 +88,14 @@ def _runner(state: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
             structured.consensus,
             structured.model_used,
         )
+        engine._check_deadline()
         structured.narrative = narrative.get("content")
         narrative_model_used = narrative.get("model_used")
         narrative_fallback_used = bool(narrative.get("fallback_used"))
         structured.narrative_model_used = narrative_model_used
         structured.narrative_fallback_used = narrative_fallback_used
+    except AnalysisTimeout:
+        raise
     except Exception as exc:
         structured.narrative = None
         structured.narrative_model_used = None
@@ -167,7 +174,10 @@ def run_auto_decision_for_market_state(
 
     try:
         state = json.loads(row["state_json"])
-        result, narrative = _runner(state)
+        deadline = time.monotonic() + max(0.001, float(OFFICIAL_ANALYSIS_MAX_SECONDS))
+        result, narrative = _runner(state, deadline=deadline)
+        if time.monotonic() >= deadline:
+            raise AnalysisTimeout("Orçamento total da análise oficial excedido")
         error = result.get("erro")
         narrative_error = result.pop("_narrative_error", None)
         decision_status = "BLOQUEADO" if error == "DADOS_CRITICOS_AUSENTES" else ("OK" if len(result.get("decisoes", [])) == 6 and not error else "ERRO")
@@ -201,6 +211,20 @@ def run_auto_decision_for_market_state(
         finally:
             conn.close()
         return {"status": status, "created": True, "recovered": recovered, "id": run_id, "result": result, "narrative": narrative}
+    except AnalysisTimeout as exc:
+        conn = sqlite3.connect(path)
+        try:
+            conn.execute(
+                """UPDATE official_decision_runs SET status='ERRO',decision_status='ERRO',
+                   narrative_status='NAO_EXECUTADA',narrative=NULL,error_type=?,error_message=?,
+                   duration_seconds=? WHERE id=?""",
+                ("OFFICIAL_ANALYSIS_TIMEOUT", str(exc), time.perf_counter() - started, run_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"status": "ERRO", "created": True, "recovered": recovered, "id": run_id,
+                "error_type": "OFFICIAL_ANALYSIS_TIMEOUT", "error_message": str(exc)}
     except Exception as exc:
         conn = sqlite3.connect(path)
         try:
