@@ -768,7 +768,6 @@ def render_jev_shadow(symbol: str) -> None:
     """Exibe o Jev somente como comparação observacional e somente leitura."""
     db_path = os.path.join(os.path.dirname(__file__), "data", "po3_learning.sqlite")
     with st.expander("ANÁLISE JEV", expanded=False):
-        st.caption("A análise JEV é observacional e não altera a decisão oficial.")
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
@@ -788,13 +787,8 @@ def render_jev_shadow(symbol: str) -> None:
             answers = json.loads(row["answers_json"] or "[]")
         except (TypeError, ValueError):
             answers = []
-        cols = st.columns(4)
-        cols[0].metric("Status", row["status"])
-        cols[1].metric("Modelo", row["model_used"] or row["model_configured"])
-        cols[2].metric("Latência", f"{row['duration_seconds'] or 0:.2f}s")
-        cols[3].metric("Custo (US$)", f"{float(row['cost_usd'] or 0):.8f}")
         if row["status"] != "OK":
-            st.warning(row["error_message"] or row["status"])
+            st.warning("Análise JEV indisponível no momento.")
             return
         official_items = {}
         if official is not None:
