@@ -638,6 +638,21 @@ def render_operational_supervisor(symbol: str) -> None:
         if latest_shadow.get("error_type"):
             shadow_detail += f" · erro: {latest_shadow['error_type']}"
         st.caption(f"Shadow: {shadow_state}{shadow_detail} · Auto Decision: {'ON' if security['AUTO_DECISION_ENGINE'] else 'OFF'}")
+        official = snapshot.get("official_analysis", {}).get("latest") or {}
+        if security["AUTO_DECISION_ENGINE"]:
+            if official:
+                st.markdown(
+                    f"**Última análise oficial:** {official.get('cutoff_at_utc') or '—'} · "
+                    f"Modelo: `{official.get('model_used') or official.get('model_configured') or '—'}` · "
+                    f"Gate: `{official.get('gate_status') or '—'}` · "
+                    f"Consenso: `{official.get('consensus_status') or '—'}` · "
+                    f"Confiança: `{official.get('confidence') or '—'}` · "
+                    f"Contexto: `{official.get('context_operational') or '—'}`"
+                )
+                if official.get("narrative"):
+                    st.markdown(official["narrative"])
+            else:
+                st.caption("Análise oficial automática: aguardando o primeiro MarketState.")
         ai_text = _supervisor_ai_text(snapshot)
         if ai_text:
             st.info(ai_text)

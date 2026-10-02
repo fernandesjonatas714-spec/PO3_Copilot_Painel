@@ -112,6 +112,34 @@ def migrate(db_path: str | Path) -> str:
           UNIQUE(market_state_id, shadow_mode_version, decision_engine_version, prompt_version, model_configured)
         );
         CREATE INDEX IF NOT EXISTS idx_shadow_runs_market_state ON shadow_runs(market_state_id);
+        CREATE TABLE IF NOT EXISTS official_decision_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          market_state_id INTEGER NOT NULL,
+          symbol TEXT NOT NULL,
+          cutoff_at_utc TEXT NOT NULL,
+          state_hash TEXT NOT NULL,
+          decision_engine_version TEXT NOT NULL,
+          prompt_version TEXT NOT NULL,
+          schema_version TEXT NOT NULL,
+          model_configured TEXT NOT NULL,
+          model_used TEXT,
+          fallback_used INTEGER NOT NULL DEFAULT 0,
+          repair_used INTEGER NOT NULL DEFAULT 0,
+          gate_status TEXT,
+          consensus_status TEXT,
+          confidence TEXT,
+          context_operational TEXT,
+          decisions_json TEXT NOT NULL,
+          narrative TEXT,
+          status TEXT NOT NULL,
+          error_type TEXT,
+          error_message TEXT,
+          duration_seconds REAL,
+          created_at_utc TEXT NOT NULL,
+          UNIQUE(market_state_id, decision_engine_version, prompt_version, model_configured)
+        );
+        CREATE INDEX IF NOT EXISTS idx_official_decision_latest
+          ON official_decision_runs(symbol, cutoff_at_utc, id);
         CREATE TABLE IF NOT EXISTS collector_runtime_status (
           symbol TEXT PRIMARY KEY, status TEXT NOT NULL, feed_lag_seconds REAL,
           last_closed_at_utc TEXT, last_tick_at_utc TEXT, detail TEXT, updated_at TEXT NOT NULL

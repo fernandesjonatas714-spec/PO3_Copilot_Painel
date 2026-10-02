@@ -93,7 +93,9 @@ class OperationalSupervisorTests(unittest.TestCase):
         snap = build_supervisor_snapshot(str(self.path), "WINV26", self.now)
         self.assertEqual(snap["database"]["integrity_status"], "ok")
         with patch("po3.operational_supervisor.flags", return_value={"AUTO_DECISION_ENGINE": True, "SHADOW_MODE_ENABLED": False, "REPLAY_ENABLED": False, "CALIBRATION_ENABLED": False, "MODEL_BENCHMARK_ENABLED": False}):
-            self.assertEqual(build_supervisor_snapshot(str(self.path), "WINV26", self.now)["overall_status"], "ATENCAO_SEGURANCA")
+            result = build_supervisor_snapshot(str(self.path), "WINV26", self.now)
+            self.assertNotEqual(result["overall_status"], "ATENCAO_SEGURANCA")
+            self.assertTrue(result["security"]["AUTO_DECISION_ENGINE"])
 
     def test_o1_three_valid_states(self):
         self._valid_three()

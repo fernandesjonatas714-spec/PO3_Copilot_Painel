@@ -10,7 +10,7 @@ from po3.outcome_engine import process_pending_outcomes
 from po3.market_state_store import freeze_market_state
 from po3.collection.freshness import assess_freshness, is_market_active
 from po3.collection.time_alignment import Mt5TimeAlignmentDetector
-from po3.v2_config import SHADOW_MODE_ENABLED
+from po3.v2_config import SHADOW_MODE_ENABLED, AUTO_DECISION_ENGINE
 from po3.decision_engine.schemas import DECISION_ENGINE_VERSION, PROMPT_VERSION
 
 @dataclass(frozen=True)
@@ -204,6 +204,12 @@ def run_worker(config:CollectorConfig,mt5:Any,stop_event:Event|None=None,max_cyc
                                                   model_configured=shadow_model or "UNSPECIFIED",
                                                   decision_engine_version=DECISION_ENGINE_VERSION,
                                                   prompt_version=PROMPT_VERSION, symbol=config.symbol)
+                if AUTO_DECISION_ENGINE:
+                    # A análise oficial é um caminho separado do Shadow, mas
+                    # usa o mesmo MarketState congelado e é idempotente por
+                    # estado/versão/modelo. Nenhum Outcome entra neste fluxo.
+                    from po3.auto_decision import process_pending_auto_decisions
+                    process_pending_auto_decisions(config.db_path, symbol=config.symbol, limit=1)
             except Exception as exc:
                 print(f"Worker factual: {type(exc).__name__}: {exc}",flush=True)
             if not heartbeat(config.lease_name,config.symbol,owner,config.db_path,config.lease_ttl_seconds):raise RuntimeError("Lease perdido durante a coleta")
