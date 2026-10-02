@@ -827,12 +827,6 @@ def render_jev_shadow(symbol: str) -> None:
         st.dataframe(rows, hide_index=True, width="stretch")
         total_agreement = f"{agreement_count}/6" if comparable_count == 6 else "INDISPONÍVEL"
         st.caption(f"Acordo total: {total_agreement}")
-        score = next((answer for answer in answers if answer.get("decision_id") == "risco_evento"), {})
-        noul = next((answer for answer in answers if answer.get("decision_id") == "conflito_contexto"), {})
-        with st.expander("Detalhes técnicos", expanded=False):
-            st.caption(f"Risco evento oficial: {official_items.get('risco_evento', {}).get('decisao', '—')} · Jev: {score.get('normalized_answer', '—')} · diferença: {comparison.get('risk_event_absolute_difference', '—')}")
-            st.caption(f"NOUL probability: {noul.get('noul_probability', '—')} · Confidence Jev: {noul.get('confidence', '—')}")
-            st.json({"answers": answers})
 
 with st.sidebar:
     st.markdown('<div class="brand"><div class="brand-mark">P3</div><div><div class="brand-title">PO3 Copilot B3</div><div class="brand-sub">Painel macro operacional</div></div></div>', unsafe_allow_html=True)
