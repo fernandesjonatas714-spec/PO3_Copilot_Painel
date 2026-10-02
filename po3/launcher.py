@@ -29,7 +29,7 @@ def _supervise_children(streamlit, children, factories, shutdown_requested,
                         clock=time.monotonic):
     """Mantém coletor e AI ativos enquanto o Streamlit define a vida útil."""
     restart_count = {name: 0 for name in factories}
-    next_restart = {name: RESTART_BACKOFF_SECONDS[0] for name in factories}
+    next_restart = {name: None for name in factories}
     healthy_since = {name: None for name in factories}
     while streamlit.poll() is None:
         if shutdown_requested():
@@ -42,8 +42,11 @@ def _supervise_children(streamlit, children, factories, shutdown_requested,
                     healthy_since[name] = now
                 elif now - healthy_since[name] >= HEALTHY_RESET_SECONDS:
                     restart_count[name] = 0
+                    next_restart[name] = now + RESTART_BACKOFF_SECONDS[0]
                 continue
             healthy_since[name] = None
+            if next_restart[name] is None:
+                next_restart[name] = now + RESTART_BACKOFF_SECONDS[0]
             if now < next_restart[name] or shutdown_requested():
                 continue
             try:

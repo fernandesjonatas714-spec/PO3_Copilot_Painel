@@ -47,6 +47,18 @@ class LauncherSupervisionTests(unittest.TestCase):
         self.assertEqual(created, ["ai"])
         self.assertIsNone(children["ai_worker"].poll())
 
+    def test_first_restart_uses_relative_five_second_delay(self):
+        value = [1000.0]
+        now = lambda: value[0]
+        sleep = lambda seconds: value.__setitem__(0, value[0] + seconds)
+        streamlit = FakeStreamlit(8)
+        children = {"ai_worker": FakeProcess(1)}
+        created = []
+        _supervise_children(
+            streamlit, children, {"ai_worker": lambda: created.append(now()) or FakeProcess(None)},
+            lambda: False, poll_interval=1, sleep_fn=sleep, clock=now)
+        self.assertEqual(created, [1005.0])
+
     def test_collector_crash_is_restarted(self):
         now, sleep = self._clock()
         streamlit = FakeStreamlit(8)
@@ -84,6 +96,23 @@ class LauncherSupervisionTests(unittest.TestCase):
             {"ai_worker": lambda: created.append(now()) or FakeProcess(1)}, lambda: False,
             poll_interval=1, sleep_fn=sleep, clock=now)
         self.assertEqual(created, [5.0, 15.0])
+
+    def test_healthy_reset_starts_new_sequence_at_five_seconds(self):
+        value = [1000.0]
+        now = lambda: value[0]
+        process = FakeProcess(None)
+        created = []
+
+        def sleep(seconds):
+            value[0] += seconds
+            if value[0] >= 1061.0:
+                process.code = 1
+
+        _supervise_children(
+            FakeStreamlit(75), {"ai_worker": process},
+            {"ai_worker": lambda: created.append(now()) or FakeProcess(None)},
+            lambda: False, poll_interval=1, sleep_fn=sleep, clock=now)
+        self.assertEqual(created, [1065.0])
 
 
 if __name__ == "__main__":
