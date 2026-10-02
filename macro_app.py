@@ -851,13 +851,3 @@ if "latest_snapshot" in st.session_state:
     render_evaluation(symbol)
 if "latest_snapshot" in st.session_state:
     render_local_chat(st.session_state["latest_snapshot"])
-
-with st.expander("Histórico de análises", expanded=False):
-    history_rows = recent_analyses(20)
-    if history_rows:
-        st.dataframe([
-            {"Data/hora": x["data_hora"], "Ativo": x["ativo"], "Regime macro": x["regime_macro"], "Contexto técnico": x["contexto_tecnico"], "Contexto operacional": x["contexto_operacional"], "Status": x["status"], "Modelo": x["modelo"]}
-            for x in history_rows
-        ], hide_index=True, width="stretch")
-    else:
-        st.caption("Nenhuma análise registrada ainda.")
