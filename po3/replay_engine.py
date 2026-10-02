@@ -50,7 +50,16 @@ def _utc(value: datetime | str | None) -> str | None:
 
 
 def _sort_key(state: dict) -> tuple[str, int]:
-    return (str(state.get("cutoff_at_utc") or state.get("timestamp") or ""), int(state.get("id") or 0))
+    frozen, metadata = _unpack_state(state)
+    return (str(metadata.get("cutoff_at_utc") or frozen.get("timestamp") or ""), int(metadata.get("market_state_id") or frozen.get("id") or 0))
+
+
+def _unpack_state(value: dict) -> tuple[dict, dict]:
+    """Separa metadados do banco do state_json congelado."""
+    if isinstance(value.get("state"), dict) and "market_state_id" in value:
+        return value["state"], {key: value.get(key) for key in ("market_state_id", "symbol", "cutoff_at_utc")}
+    return value, {"market_state_id": value.get("id"), "symbol": value.get("symbol") or value.get("ativo"),
+                   "cutoff_at_utc": value.get("cutoff_at_utc")}
 
 
 def replay_market_states(
@@ -65,14 +74,15 @@ def replay_market_states(
     version = runner_version or "UNSPECIFIED"
     results = []
     for original in sorted((deepcopy(state) for state in states), key=_sort_key):
-        payload = sanitize_replay_state(original)
+        frozen_state, metadata = _unpack_state(original)
+        payload = sanitize_replay_state(frozen_state)
         started = perf_counter()
         base = {
             "replay_version": REPLAY_VERSION,
-            "market_state_id": original.get("id"),
-            "symbol": original.get("symbol") or original.get("ativo"),
-            "cutoff_at_utc": original.get("cutoff_at_utc") or original.get("timestamp"),
-            "state_hash": state_hash(original),
+            "market_state_id": metadata.get("market_state_id"),
+            "symbol": metadata.get("symbol") or frozen_state.get("ativo"),
+            "cutoff_at_utc": metadata.get("cutoff_at_utc") or frozen_state.get("timestamp"),
+            "state_hash": state_hash(frozen_state),
             "run_at_utc": run_at,
             "runner_version": version,
         }
@@ -112,10 +122,8 @@ def _load_states(db_path: str | Path, symbol: str | None, start_cutoff: str | No
             state = json.loads(row["state_json"])
             if not isinstance(state, dict):
                 raise ValueError(f"MarketState {row['id']} não contém objeto JSON")
-            state.setdefault("id", row["id"])
-            state.setdefault("symbol", row["symbol"])
-            state.setdefault("cutoff_at_utc", row["cutoff_at_utc"])
-            states.append(state)
+            states.append({"market_state_id": row["id"], "symbol": row["symbol"],
+                           "cutoff_at_utc": row["cutoff_at_utc"], "state": state})
         return states
 
 
@@ -144,42 +152,61 @@ def _result_decisions(result: Any) -> dict[str, Any]:
     return {}
 
 
+def _result_status(result: Any, key: str) -> Any:
+    value = result
+    if isinstance(value, dict) and isinstance(value.get("result"), dict):
+        value = value["result"]
+    nested_key = "consenso" if key == "consensus_status" else "gate"
+    nested = value.get(nested_key) if isinstance(value, dict) else None
+    if isinstance(nested, dict) and nested.get("status") not in (None, ""):
+        return nested.get("status")
+    return value.get(key) if isinstance(value, dict) else None
+
+
 def compare_replay_with_observation(db_path: str | Path, replay_results: Iterable[dict]) -> list[dict]:
     """Compara Replay somente com observação MATCHED do mesmo MarketState."""
     results = list(replay_results)
     ids = [row.get("market_state_id") for row in results if row.get("market_state_id") is not None]
-    observations = {}
+    observations: dict[Any, list[dict]] = {}
     if ids:
         uri = f"file:{Path(db_path).resolve().as_posix()}?mode=ro"
         with sqlite3.connect(uri, uri=True) as conn:
             conn.row_factory = sqlite3.Row
             placeholders = ",".join("?" for _ in ids)
             for row in conn.execute(
-                f"SELECT market_state_id,decisions_json,gate_status,consensus_status,link_status FROM decision_observations WHERE market_state_id IN ({placeholders})",
+                f"SELECT market_state_id,analysis_run_id,decisions_json,gate_status,consensus_status,link_status FROM decision_observations WHERE market_state_id IN ({placeholders}) ORDER BY market_state_id,analysis_run_id",
                 tuple(ids),
             ).fetchall():
                 if row["link_status"] == "MATCHED":
-                    observations[row["market_state_id"]] = dict(row)
+                    observations.setdefault(row["market_state_id"], []).append(dict(row))
     comparisons = []
     for replay in results:
-        original = observations.get(replay.get("market_state_id"))
-        if not original:
+        matched = observations.get(replay.get("market_state_id"), [])
+        if replay.get("status") == "ERRO":
+            comparisons.append({"market_state_id": replay.get("market_state_id"), "status": "INDISPONIVEL", "reason": "REPLAY_ERRO"})
+            continue
+        if not matched:
             comparisons.append({"market_state_id": replay.get("market_state_id"), "status": "INDISPONIVEL"})
             continue
-        original_items = _json_list(original.get("decisions_json"))
-        original_decisions = {item.get("id_decisao"): item.get("decisao") for item in original_items if isinstance(item, dict)}
-        replay_decisions = _result_decisions(replay.get("result"))
-        per_decision = {}
-        for key in sorted(set(original_decisions) | set(replay_decisions)):
-            if key not in original_decisions or key not in replay_decisions:
-                per_decision[key] = "INDISPONIVEL"
-            else:
-                per_decision[key] = "IGUAL" if original_decisions[key] == replay_decisions[key] else "DIFERENTE"
-        replay_value = replay.get("result") if isinstance(replay.get("result"), dict) else {}
-        comparisons.append({"market_state_id": replay.get("market_state_id"), "status": "OK",
-                            "decisions": per_decision,
-                            "gate": _compare_value(original.get("gate_status"), replay_value.get("gate_status")),
-                            "consenso": _compare_value(original.get("consensus_status"), replay_value.get("consensus_status"))})
+        for original in matched:
+            try:
+                original_items = _json_list(original.get("decisions_json"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                comparisons.append({"market_state_id": replay.get("market_state_id"), "analysis_run_id": original.get("analysis_run_id"),
+                                    "status": "INDISPONIVEL", "reason": "DECISIONS_JSON_INVALIDO"})
+                continue
+            original_decisions = {item.get("id_decisao"): item.get("decisao") for item in original_items if isinstance(item, dict)}
+            replay_decisions = _result_decisions(replay.get("result"))
+            per_decision = {}
+            for key in sorted(set(original_decisions) | set(replay_decisions)):
+                if key not in original_decisions or key not in replay_decisions:
+                    per_decision[key] = "INDISPONIVEL"
+                else:
+                    per_decision[key] = "IGUAL" if original_decisions[key] == replay_decisions[key] else "DIFERENTE"
+            comparisons.append({"market_state_id": replay.get("market_state_id"), "analysis_run_id": original.get("analysis_run_id"),
+                                "status": "OK", "decisions": per_decision,
+                                "gate": _compare_value(original.get("gate_status"), _result_status(replay.get("result"), "gate_status")),
+                                "consenso": _compare_value(original.get("consensus_status"), _result_status(replay.get("result"), "consensus_status"))})
     return comparisons
 
 

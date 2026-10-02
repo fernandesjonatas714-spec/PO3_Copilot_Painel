@@ -84,6 +84,17 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(len(replay_from_db(self.path, runner, start_cutoff="2026-01-01T10:05:00Z", end_cutoff="2026-01-01T10:10:00Z")), 2)
         self.assertEqual(len(replay_from_db(self.path, runner, limit=1)), 1)
 
+    def test_db_runner_receives_exact_state_json_without_database_metadata(self):
+        frozen = self.state("WIN", "2026-01-01T10:00:00Z")
+        state_id = insert_market_state(frozen, self.path, cutoff_at_utc="2026-01-01T10:00:00Z", symbol="WIN")
+        received = []
+        replay_from_db(self.path, lambda payload: received.append(payload) or {"ok": True})
+        self.assertEqual(received[0], frozen)
+        self.assertNotIn("id", received[0])
+        self.assertNotIn("symbol", received[0])
+        self.assertNotIn("cutoff_at_utc", received[0])
+        self.assertEqual(replay_from_db(self.path, lambda payload: {"ok": True})[0]["state_hash"], __import__("po3.calibration", fromlist=["state_hash"]).state_hash(frozen))
+
     def test_db_is_read_only_and_outcomes_are_not_used(self):
         state_id = insert_market_state(self.state(), self.path, cutoff_at_utc="2026-01-01T10:00:00Z", symbol="WIN")
         with sqlite3.connect(self.path) as conn:
@@ -93,13 +104,13 @@ class ReplayTests(unittest.TestCase):
         replay_from_db(self.path, lambda payload: payload["ativo"])
         self.assertEqual(before, Path(self.path).read_bytes())
 
-    def _add_observation(self, state_id, decisions):
+    def _add_observation(self, state_id, decisions, analysis_id=1, gate="VALIDO", consensus="CONSENSO"):
         with sqlite3.connect(self.path) as conn:
             conn.execute("""INSERT INTO decision_observations
                 (analysis_run_id,market_state_id,symbol,decision_state_hash,link_status,decisions_json,
                  gate_status,consensus_status,schema_version,created_at)
                 VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (1, state_id, "WIN", "hash", "MATCHED", json.dumps(decisions), "VALIDO", "CONSENSO", "2.0", "x"))
+                (analysis_id, state_id, "WIN", "hash", "MATCHED", json.dumps(decisions), gate, consensus, "2.0", "x"))
 
     def test_compare_matched_equal_and_different_decisions(self):
         state_id = insert_market_state(self.state(), self.path, cutoff_at_utc="2026-01-01T10:00:00Z", symbol="WIN")
@@ -113,6 +124,36 @@ class ReplayTests(unittest.TestCase):
     def test_compare_without_exact_matched_observation_is_unavailable(self):
         result = compare_replay_with_observation(self.path, [{"market_state_id": 999, "result": {}}])
         self.assertEqual(result[0]["status"], "INDISPONIVEL")
+
+    def test_compare_reads_nested_gate_and_consensus(self):
+        state_id = insert_market_state(self.state(), self.path, cutoff_at_utc="2026-01-01T10:00:00Z", symbol="WIN")
+        self._add_observation(state_id, [{"id_decisao": "regime_macro", "decisao": "MISTO"}], gate="VALIDO", consensus="CONSENSO")
+        replay_result = [{"market_state_id": state_id, "result": {"gate": {"status": "VALIDO"}, "consenso": {"status": "CONSENSO"}, "decisoes": [{"id_decisao": "regime_macro", "decisao": "MISTO"}]}}]
+        comparison = compare_replay_with_observation(self.path, replay_result)[0]
+        self.assertEqual((comparison["gate"], comparison["consenso"]), ("IGUAL", "IGUAL"))
+        replay_result[0]["result"]["gate"]["status"] = "REVISAO"
+        replay_result[0]["result"]["consenso"]["status"] = "DIVERGENCIA"
+        comparison = compare_replay_with_observation(self.path, replay_result)[0]
+        self.assertEqual((comparison["gate"], comparison["consenso"]), ("DIFERENTE", "DIFERENTE"))
+
+    def test_multiple_matched_observations_are_all_returned(self):
+        state_id = insert_market_state(self.state(), self.path, cutoff_at_utc="2026-01-01T10:00:00Z", symbol="WIN")
+        self._add_observation(state_id, [{"id_decisao": "regime_macro", "decisao": "MISTO"}], analysis_id=21)
+        self._add_observation(state_id, [{"id_decisao": "regime_macro", "decisao": "NEUTRO"}], analysis_id=22)
+        result = compare_replay_with_observation(self.path, [{"market_state_id": state_id, "result": {"decisoes": []}}])
+        self.assertEqual([row["analysis_run_id"] for row in result], [21, 22])
+
+    def test_replay_error_comparison_is_unavailable(self):
+        result = compare_replay_with_observation(self.path, [{"market_state_id": 1, "status": "ERRO", "result": None}])
+        self.assertEqual(result[0], {"market_state_id": 1, "status": "INDISPONIVEL", "reason": "REPLAY_ERRO"})
+
+    def test_invalid_original_decisions_json_is_unavailable(self):
+        state_id = insert_market_state(self.state(), self.path, cutoff_at_utc="2026-01-01T10:00:00Z", symbol="WIN")
+        self._add_observation(state_id, [])
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("UPDATE decision_observations SET decisions_json=?", ("{invalid",))
+        result = compare_replay_with_observation(self.path, [{"market_state_id": state_id, "result": {}}])
+        self.assertEqual(result[0]["reason"], "DECISIONS_JSON_INVALIDO")
 
     def test_replay_flag_is_disabled_and_no_llm_dependency(self):
         self.assertFalse(flags()["REPLAY_ENABLED"])
