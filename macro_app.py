@@ -691,72 +691,22 @@ def _render_diagnostic(snapshot: dict, symbol: str) -> None:
 
 
 def render_operational_supervisor(symbol: str) -> None:
-    """Visão principal compacta e diagnóstico técnico somente leitura."""
+    """Exibe somente o estado resumido; os detalhes ficam no diagnóstico."""
     db_path = os.path.join(os.path.dirname(__file__), "data", "po3_learning.sqlite")
     try:
         snapshot = build_supervisor_snapshot(db_path, symbol)
-    except Exception as exc:
-        st.error(f"Supervisor indisponível: {type(exc).__name__}")
+    except Exception:
+        st.markdown("**Supervisor do painel:** ERRO")
         return
-    session = snapshot["session"]
-    collector = snapshot["collector"]
-    security = snapshot["security"]
-    official = snapshot.get("official_analysis", {}).get("latest") or {}
-    jev = _latest_jev(db_path, symbol)
-    feed = collector.get("feed_liveness_status") or collector.get("status")
-    collection = "OK" if (not session.get("market_active") or feed in {"LIVE", "ATUAL", "SEM_NOVO_CANDLE_MERCADO_FECHADO"}) else ("ATENÇÃO" if feed else "ERRO")
-    official_status = official.get("status") or "PROCESSANDO"
-    ai_status = "OK" if official_status == "OK" else "PROCESSANDO" if official_status == "PROCESSANDO" else "ERRO" if official_status == "ERRO" else "ATENÇÃO"
-    with st.container(border=True):
-        st.title(f"PO3 COPILOT — {symbol}")
-        st.subheader("Status")
-        cols = st.columns(4)
-        cols[0].metric("Status geral", _display_status(snapshot.get("overall_status")))
-        cols[1].metric("Mercado", "ABERTO" if session.get("market_active") else "FECHADO")
-        cols[2].metric("Coleta", collection)
-        cols[3].metric("IA oficial", ai_status)
-        window = current_ai_window_status()
-        if window["open"]:
-            st.caption(f"IA automática: ATIVA · Janela: {window['start']}–{window['end']}")
-        else:
-            st.caption(f"IA automática: FORA DA JANELA · Próxima abertura: {window['start']}")
-        st.subheader("Decisão oficial")
-        context = _decision_label(official.get("context_operational"))
-        st.markdown(f"### {context}")
-        dcols = st.columns(5)
-        dcols[0].metric("Confiança", _decision_label(official.get("confidence")))
-        dcols[1].metric("Gate", _decision_label(official.get("gate_status")))
-        dcols[2].metric("Consenso", _decision_label(official.get("consensus_status")))
-        dcols[3].metric("Modelo", official.get("model_used") or official.get("model_configured") or "Indisponível")
-        dcols[4].metric("Última análise", _local_time(official.get("created_at_utc")))
-        if official.get("narrative"):
-            st.markdown(official["narrative"])
-    alerts = []
-    if session.get("market_active") and feed not in {"LIVE", "ATUAL"}:
-        alerts.append("Feed MT5 atrasado ou indisponível")
-    if collector.get("clock_alignment_status") not in {"ALIGNED", "OFFSET_DETECTED"}:
-        alerts.append("Clock MT5 com alinhamento instável")
-    if not snapshot.get("lease", {}).get("active"):
-        alerts.append("Collector indisponível")
-    if security.get("AUTO_DECISION_ENGINE") and official.get("status") == "ERRO":
-        alerts.append("IA oficial com erro")
-    latest_state = snapshot.get("latest_market_state") or {}
-    try:
-        with sqlite3.connect(db_path) as conn:
-            state_row = conn.execute("SELECT state_json FROM market_states WHERE id=?", (latest_state.get("id"),)).fetchone()
-        quality = json.loads(state_row[0]).get("qualidade_dados", {}) if state_row else {}
-        if quality.get("calendario_disponivel") is False:
-            alerts.append("Calendário indisponível")
-    except (sqlite3.Error, TypeError, ValueError):
-        pass
-    if security.get("SHADOW_MODE_ENABLED") and jev.get("status") == "ERRO":
-        alerts.append("Jev indisponível")
-    if alerts:
-        st.warning(" · ".join(f"⚠ {item}" for item in alerts))
+    overall = snapshot.get("overall_status")
+    if overall in {"OPERACAO_NORMAL", "AGUARDANDO_SESSAO"}:
+        compact_status = "OK"
+    elif overall in {"ATENCAO_BANCO", "ATENCAO_AUTO_DECISION"}:
+        compact_status = "ERRO"
+    else:
+        compact_status = "ATENÇÃO"
+    st.markdown(f"**Supervisor do painel:** {compact_status}")
     _render_diagnostic(snapshot, symbol)
-    ai_text = _supervisor_ai_text(snapshot)
-    if ai_text and alerts:
-        st.caption(ai_text)
 
 
 def render_evaluation(symbol: str) -> None:
