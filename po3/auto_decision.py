@@ -23,6 +23,7 @@ from po3.shadow_runner import _hydrate_market_state
 from po3.run_recovery import ORPHAN_RUN_STALE_SECONDS, run_is_recoverable
 from po3.storage.migrations import migrate
 from po3.v2_config import OFFICIAL_ANALYSIS_MAX_SECONDS
+from po3.ai_analysis_window import ensure_ai_analysis_baseline, is_ai_analysis_window_open
 
 
 def _utc_now() -> str:
@@ -248,10 +249,15 @@ def process_pending_auto_decisions(
     limit: int = 1,
     worker_owner_id: str | None = None,
     stale_timeout_seconds: int = ORPHAN_RUN_STALE_SECONDS,
+    enforce_window: bool = False,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Processa somente estados ainda não analisados pela configuração atual."""
     path = Path(db_path)
     migrate(path)
+    if enforce_window and not is_ai_analysis_window_open(now):
+        return {"selected": 0, "created": 0, "results": [], "status": "FORA_JANELA_IA"}
+    baseline = ensure_ai_analysis_baseline(path, symbol or "WINV26", now=now) if enforce_window else None
     model = model_configured or configured_model_name()
     conn = sqlite3.connect(path)
     try:
@@ -261,6 +267,14 @@ def process_pending_auto_decisions(
         if symbol:
             where.append("s.symbol=?")
             args.append(symbol)
+        if enforce_window and baseline:
+            _, baseline_id, baseline_cutoff = baseline
+            if baseline_cutoff is None:
+                where.append("s.id > ?")
+                args.append(baseline_id)
+            else:
+                where.append("(s.cutoff_at_utc > ? OR (s.cutoff_at_utc = ? AND s.id > ?))")
+                args.extend([baseline_cutoff, baseline_cutoff, baseline_id])
         args.append(max(1, int(limit)))
         rows = conn.execute(
             f"""SELECT s.id FROM market_states s

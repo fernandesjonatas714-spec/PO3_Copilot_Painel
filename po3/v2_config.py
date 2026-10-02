@@ -24,6 +24,8 @@ JEV_SHADOW_ENABLED = _enabled("JEV_SHADOW_ENABLED", False)
 SUPERVISOR_AI_ENABLED = _enabled("SUPERVISOR_AI_ENABLED", False)
 
 def flags() -> dict:
+    from po3.ai_analysis_window import window_config
+    ai_window = window_config()
     return {
         "AUTO_DATA_COLLECTION": AUTO_DATA_COLLECTION,
         "MARKET_STATE_SNAPSHOT_ENABLED": MARKET_STATE_SNAPSHOT_ENABLED,
@@ -38,4 +40,8 @@ def flags() -> dict:
         "JEV_SHADOW_ENABLED": JEV_SHADOW_ENABLED,
         "SUPERVISOR_AI_ENABLED": SUPERVISOR_AI_ENABLED,
         "OFFICIAL_ANALYSIS_MAX_SECONDS": OFFICIAL_ANALYSIS_MAX_SECONDS,
+        "AI_ANALYSIS_WINDOW_ENABLED": ai_window["enabled"],
+        "AI_ANALYSIS_START": ai_window["start_text"],
+        "AI_ANALYSIS_END": ai_window["end_text"],
+        "AI_ANALYSIS_TIMEZONE": ai_window["timezone"],
     }

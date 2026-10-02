@@ -20,6 +20,7 @@ from po3.replay_engine import sanitize_replay_state
 from po3.decision_engine.schemas import DECISION_ENGINE_VERSION, PROMPT_VERSION
 from po3.v2_config import SHADOW_MODE_ENABLED
 from po3.run_recovery import ORPHAN_RUN_STALE_SECONDS, run_is_recoverable
+from po3.ai_analysis_window import ensure_ai_analysis_baseline, is_ai_analysis_window_open
 
 SHADOW_MODE_VERSION = "1.0.0"
 SCHEMA_VERSION = "2.0.0"
@@ -130,15 +131,28 @@ def process_pending_shadow_states(db_path: str | Path, decision_runner: Callable
                                   decision_engine_version: str = DECISION_ENGINE_VERSION,
                                   prompt_version: str = PROMPT_VERSION, symbol: str | None = None,
                                   worker_owner_id: str | None = None,
-                                  stale_timeout_seconds: int = ORPHAN_RUN_STALE_SECONDS) -> dict:
+                                  stale_timeout_seconds: int = ORPHAN_RUN_STALE_SECONDS,
+                                  enforce_window: bool = False,
+                                  now: datetime | None = None) -> dict:
     if not SHADOW_MODE_ENABLED:
         return {"found": 0, "created": 0, "ignored": 0, "OK": 0, "ERRO": 0, "DESABILITADO": 0}
+    if enforce_window and not is_ai_analysis_window_open(now):
+        return {"found": 0, "created": 0, "ignored": 0, "OK": 0, "ERRO": 0, "status": "FORA_JANELA_IA"}
+    baseline = ensure_ai_analysis_baseline(db_path, symbol or "WINV26", now=now) if enforce_window else None
     with _connect_ro(db_path) as conn:
         clauses = ["NOT EXISTS (SELECT 1 FROM shadow_runs AS r WHERE r.market_state_id=s.id AND r.shadow_mode_version=? AND r.decision_engine_version=? AND r.prompt_version=? AND r.model_configured=? AND r.status <> 'RUNNING')"]
         params: list[Any] = [shadow_mode_version, decision_engine_version, prompt_version, model_configured]
         if symbol is not None:
             clauses.append("s.symbol=?")
             params.append(symbol)
+        if enforce_window and baseline:
+            _, baseline_id, baseline_cutoff = baseline
+            if baseline_cutoff is None:
+                clauses.append("s.id > ?")
+                params.append(baseline_id)
+            else:
+                clauses.append("(s.cutoff_at_utc > ? OR (s.cutoff_at_utc = ? AND s.id > ?))")
+                params.extend([baseline_cutoff, baseline_cutoff, baseline_id])
         rows = conn.execute(f"""SELECT s.id
             FROM market_states AS s
             WHERE {' AND '.join(clauses)}

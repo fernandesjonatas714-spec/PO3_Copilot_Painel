@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from po3.collection.freshness import is_market_active
 from po3.v2_config import flags
+from po3.ai_analysis_window import is_ai_analysis_window_open
 
 UTC = timezone.utc
 BRT = ZoneInfo("America/Sao_Paulo")
@@ -261,6 +262,10 @@ def supervisor_ai_gate(snapshot: dict, state: dict, now: datetime | None = None)
     now = now or datetime.now(UTC)
     current_hash = operational_state_hash(snapshot)
     current_status = snapshot.get("overall_status")
+    if not is_ai_analysis_window_open(now):
+        return {"should_call": False, "critical_transition": False,
+                "hash": current_hash, "status": current_status,
+                "reason": "FORA_JANELA_IA"}
     previous_hash = state.get("last_supervisor_hash")
     previous_status = state.get("last_supervisor_status")
     previous_at = state.get("last_supervisor_ai_at")

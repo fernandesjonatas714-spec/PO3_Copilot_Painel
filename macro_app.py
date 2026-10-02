@@ -19,6 +19,7 @@ from po3.analytics import build_evaluation_report
 from po3.v2_config import EVALUATION_ENGINE_ENABLED, JEV_SHADOW_ENABLED, SUPERVISOR_AI_ENABLED
 from po3.jev_comparison import compare_market_state
 from po3.operational_supervisor import build_supervisor_snapshot, supervisor_ai_context, supervisor_ai_gate
+from po3.ai_analysis_window import current_ai_window_status
 
 DEFAULT_TERMINAL = r"C:\Program Files\Clear Investimentos MT5 Terminal\terminal64.exe"
 
@@ -680,6 +681,11 @@ def _render_diagnostic(snapshot: dict, symbol: str) -> None:
             st.caption("Leases indisponíveis.")
         st.markdown("**Flags**")
         st.write({key: security.get(key) for key in ("AUTO_DECISION_ENGINE", "SHADOW_MODE_ENABLED", "CALIBRATION_ENABLED", "MODEL_BENCHMARK_ENABLED", "REPLAY_ENABLED")})
+        window_status = current_ai_window_status()
+        st.write({"AI_ANALYSIS_WINDOW_ENABLED": window_status["enabled"],
+                  "AI_ANALYSIS_START": window_status["start"],
+                  "AI_ANALYSIS_END": window_status["end"],
+                  "AI_ANALYSIS_TIMEZONE": window_status["timezone"]})
         st.markdown("**Shadow técnico**")
         st.write({key: jev.get(key) for key in ("id", "market_state_id", "cutoff_at_utc", "status", "created_at_utc", "finished_at_utc", "error_type", "error_message")})
 
@@ -709,6 +715,11 @@ def render_operational_supervisor(symbol: str) -> None:
         cols[1].metric("Mercado", "ABERTO" if session.get("market_active") else "FECHADO")
         cols[2].metric("Coleta", collection)
         cols[3].metric("IA oficial", ai_status)
+        window = current_ai_window_status()
+        if window["open"]:
+            st.caption(f"IA automática: ATIVA · Janela: {window['start']}–{window['end']}")
+        else:
+            st.caption(f"IA automática: FORA DA JANELA · Próxima abertura: {window['start']}")
         st.subheader("Decisão oficial")
         context = _decision_label(official.get("context_operational"))
         st.markdown(f"### {context}")

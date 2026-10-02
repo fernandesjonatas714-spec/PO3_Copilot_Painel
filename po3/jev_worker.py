@@ -21,6 +21,7 @@ from po3.shadow_runner import _hydrate_market_state
 from po3.storage.market_repository import acquire_lease, heartbeat, release_lease
 from po3.storage.migrations import migrate
 from po3.v2_config import JEV_SHADOW_ENABLED
+from po3.ai_analysis_window import ensure_ai_analysis_baseline, is_ai_analysis_window_open
 
 JEV_ENGINE_VERSION = "0.1.0-shadow"
 SCHEMA_VERSION = "2.0.0"
@@ -198,13 +199,25 @@ def run_jev_for_market_state(db_path: str | Path, market_state_id: int,
 def process_pending_jev_states(db_path: str | Path, runner: Callable[[dict, dict], dict] = send_jev_decisions, *,
                                symbol: str | None = None, limit: int = 1, model_configured: str = JEV_MODEL,
                                worker_owner_id: str | None = None,
-                               stale_timeout_seconds: int = ORPHAN_RUN_STALE_SECONDS) -> dict[str, Any]:
+                               stale_timeout_seconds: int = ORPHAN_RUN_STALE_SECONDS,
+                               enforce_window: bool = False,
+                               now: datetime | None = None) -> dict[str, Any]:
     if not JEV_SHADOW_ENABLED:
         return {"found": 0, "created": 0, "OK": 0, "ERRO": 0, "BLOQUEADO": 0, "DESABILITADO": 0}
+    if enforce_window and not is_ai_analysis_window_open(now):
+        return {"found": 0, "created": 0, "OK": 0, "ERRO": 0, "BLOQUEADO": 0, "status": "FORA_JANELA_IA"}
+    baseline = ensure_ai_analysis_baseline(db_path, symbol or "WINV26", now=now) if enforce_window else None
     clauses = ["NOT EXISTS (SELECT 1 FROM jev_shadow_runs r WHERE r.market_state_id=s.id AND r.model_configured=? AND r.jev_question_version=? AND r.status <> 'RUNNING')"]
     args: list[Any] = [model_configured, JEV_QUESTION_VERSION]
     if symbol:
         clauses.append("s.symbol=?"); args.append(symbol)
+    if enforce_window and baseline:
+        _, baseline_id, baseline_cutoff = baseline
+        if baseline_cutoff is None:
+            clauses.append("s.id > ?"); args.append(baseline_id)
+        else:
+            clauses.append("(s.cutoff_at_utc > ? OR (s.cutoff_at_utc = ? AND s.id > ?))")
+            args.extend([baseline_cutoff, baseline_cutoff, baseline_id])
     with _connect(db_path) as conn:
         rows = conn.execute(f"SELECT s.id FROM market_states s WHERE {' AND '.join(clauses)} ORDER BY s.cutoff_at_utc ASC,s.id ASC LIMIT ?", tuple(args + [max(0, int(limit))])).fetchall()
     summary = {"found": len(rows), "created": 0, "OK": 0, "ERRO": 0, "BLOQUEADO": 0}
@@ -246,7 +259,8 @@ def run_jev_worker(config: JevWorkerConfig, stop_event: Event | None = None, max
         while not stop_event.is_set() and (max_cycles is None or cycles < max_cycles):
             if stop_file and os.path.exists(stop_file): stop_event.set(); break
             if lost.is_set(): raise RuntimeError("Lease Jev perdido")
-            process_pending_jev_states(config.db_path, symbol=config.symbol, limit=1, worker_owner_id=owner)
+            process_pending_jev_states(config.db_path, symbol=config.symbol, limit=1,
+                                       worker_owner_id=owner, enforce_window=True)
             cycles += 1
             if max_cycles is None: stop_event.wait(max(1, config.poll_seconds))
     finally:
