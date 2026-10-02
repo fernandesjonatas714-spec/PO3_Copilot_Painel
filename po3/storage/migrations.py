@@ -127,6 +127,7 @@ def migrate(db_path: str | Path) -> str:
           external_call_performed INTEGER NOT NULL DEFAULT 0,
           answers_json TEXT NOT NULL DEFAULT '[]',
           raw_response_json TEXT,
+          request_id TEXT,
           input_tokens INTEGER,
           output_tokens INTEGER,
           cost_usd REAL NOT NULL DEFAULT 0,
@@ -196,6 +197,9 @@ def migrate(db_path: str | Path) -> str:
             conn.execute("ALTER TABLE collector_runtime_status ADD COLUMN detected_offset_seconds REAL")
         if "normalized_tick_at_utc" not in runtime_columns:
             conn.execute("ALTER TABLE collector_runtime_status ADD COLUMN normalized_tick_at_utc TEXT")
+        jev_columns = {row[1] for row in conn.execute("PRAGMA table_info(jev_shadow_runs)")}
+        if "request_id" not in jev_columns:
+            conn.execute("ALTER TABLE jev_shadow_runs ADD COLUMN request_id TEXT")
         official_columns = {row[1] for row in conn.execute("PRAGMA table_info(official_decision_runs)")}
         for column, definition in (("model_attempts_json", "TEXT NOT NULL DEFAULT '[]'"), ("decision_model_used", "TEXT"), ("decision_model_attempts_json", "TEXT NOT NULL DEFAULT '[]'"), ("decision_fallback_used", "INTEGER NOT NULL DEFAULT 0"), ("decision_repair_used", "INTEGER NOT NULL DEFAULT 0"), ("narrative_model_used", "TEXT"), ("narrative_fallback_used", "INTEGER NOT NULL DEFAULT 0"), ("decision_status", "TEXT"), ("narrative_status", "TEXT")):
             if column not in official_columns:

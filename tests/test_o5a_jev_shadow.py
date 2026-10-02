@@ -66,6 +66,33 @@ class O5AJevTests(unittest.TestCase):
         self.assertEqual(result["model_used"], "typesafe/jev-1.13")
         self.assertEqual((result["input_tokens"], result["output_tokens"], result["cost_usd"]), (10, 20, 0.01))
 
+    def test_real_decisions_api_fields_are_normalized(self):
+        answers = [
+            {"decision_id": "regime_macro", "type": "choice", "choice": "MISTO", "confidence": 0.8, "probabilities": {"MISTO": 0.8}},
+            {"decision_id": "contexto_domestico", "type": "choice", "choice": "NEUTRO", "confidence": 0.8},
+            {"decision_id": "contexto_tecnico", "type": "choice", "choice": "NEUTRO", "confidence": 0.8},
+            {"decision_id": "risco_evento", "type": "score", "score": 4, "confidence": 0.8},
+            {"decision_id": "conflito_contexto", "type": "noul", "noul": 0.35, "confidence": 0.8},
+            {"decision_id": "contexto_operacional", "type": "choice", "choice": "AGUARDAR", "confidence": 0.8},
+        ]
+        normalized = _normalize_answers(answers)
+        self.assertEqual(normalized[0]["normalized_answer"], "MISTO")
+        self.assertEqual(normalized[3]["normalized_answer"], 4 * 10 / 9)
+        self.assertEqual(normalized[4]["normalized_answer"], "NAO")
+
+    def test_api_metadata_is_preserved_when_normalization_fails(self):
+        state_id = insert_market_state(self.state(), self.path, cutoff_at_utc="2026-01-01T10:00:00+00:00", symbol="WINV26")
+        bad = self.answers(); bad[0]["answer"] = "FORA_DAS_OPCOES"
+        result = {"model_used": "typesafe/jev-1.13", "provider": "openrouter", "input_tokens": 11,
+                  "output_tokens": 7, "cost_usd": 0.12, "duration_seconds": 1.25,
+                  "request_id": "req-real", "raw_response": {"answers": bad}, "answers": bad}
+        with patch("po3.jev_worker.JEV_SHADOW_ENABLED", True):
+            run_jev_for_market_state(self.path, state_id, lambda s, q: result)
+        with sqlite3.connect(self.path) as conn:
+            row = conn.execute("SELECT status,model_used,provider,input_tokens,output_tokens,cost_usd,duration_seconds,request_id,raw_response_json FROM jev_shadow_runs").fetchone()
+        self.assertEqual(row[:8], ("ERRO", "typesafe/jev-1.13", "openrouter", 11, 7, .12, 1.25, "req-real"))
+        self.assertIn("FORA_DAS_OPCOES", row[8])
+
     def test_service_rejects_answer_shape_without_retry(self):
         with patch("po3.jev_service.urlopen", return_value=_Response({"answers": []})):
             with self.assertRaisesRegex(JevError, "seis respostas"):

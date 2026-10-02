@@ -60,7 +60,9 @@ def _normalize_answers(answers: Any) -> list[dict]:
         decision_id = raw.get("decision_id", raw.get("id_decisao"))
         if decision_id not in expected:
             raise JevError("Identificador de decisão Jev inválido.", error_type="INVALID_DECISION_ID")
-        value = raw.get("answer", raw.get("value", raw.get("raw_answer")))
+        value = raw.get("choice")
+        if value is None:
+            value = raw.get("answer", raw.get("value", raw.get("raw_answer")))
         item = {"decision_id": decision_id, "answer_type": raw.get("answer_type"),
                 "raw_answer": value, "confidence": raw.get("confidence"),
                 "probabilities": raw.get("probabilities")}
@@ -84,7 +86,10 @@ def _normalize_answers(answers: Any) -> list[dict]:
                 raise JevError("Probabilidades Jev fora do intervalo 0..1.", error_type="INVALID_PROBABILITIES")
         if decision_id == "risco_evento":
             try:
-                score = float(raw.get("raw_score", value))
+                score_value = raw.get("score")
+                if score_value is None:
+                    score_value = raw.get("raw_score", value)
+                score = float(score_value)
             except (TypeError, ValueError) as exc:
                 raise JevError("Score Jev inválido.", error_type="INVALID_SCORE") from exc
             if not 0.0 <= score <= 9.0:
@@ -92,7 +97,10 @@ def _normalize_answers(answers: Any) -> list[dict]:
             item["raw_score"] = score
             item["normalized_answer"] = score * 10.0 / 9.0
         elif decision_id == "conflito_contexto":
-            try: probability = float(raw.get("noul_probability", raw.get("probability", value)))
+            noul_value = raw.get("noul")
+            if noul_value is None:
+                noul_value = raw.get("noul_probability", raw.get("probability", value))
+            try: probability = float(noul_value)
             except (TypeError, ValueError) as exc:
                 raise JevError("Probabilidade NOUL inválida.", error_type="INVALID_NOUL") from exc
             if not 0.0 <= probability <= 1.0:
@@ -116,12 +124,13 @@ def _persist_result(path: str | Path, run_id: int, result: dict[str, Any], *, st
     with _connect(path) as conn:
         conn.execute("""UPDATE jev_shadow_runs SET model_used=?,provider=?,status=?,
           external_call_performed=?,answers_json=?,raw_response_json=?,input_tokens=?,
-          output_tokens=?,cost_usd=?,duration_seconds=?,error_type=?,error_message=?,finished_at_utc=?
+          output_tokens=?,cost_usd=?,duration_seconds=?,request_id=?,error_type=?,error_message=?,finished_at_utc=?
           WHERE id=?""", (result.get("model_used"), result.get("provider"), status,
           int(external_call), json.dumps(result.get("answers", []), ensure_ascii=False, default=str),
           json.dumps(result.get("raw_response"), ensure_ascii=False, default=str) if result.get("raw_response") is not None else None,
           result.get("input_tokens"), result.get("output_tokens"), float(result.get("cost_usd") or 0),
-          perf_counter() - started, error_type, error_message, finished, run_id))
+          result.get("duration_seconds", perf_counter() - started), result.get("request_id"),
+          error_type, error_message, finished, run_id))
 
 
 def run_jev_for_market_state(db_path: str | Path, market_state_id: int,
@@ -159,6 +168,7 @@ def run_jev_for_market_state(db_path: str | Path, market_state_id: int,
             run_id = int(cur.lastrowid)
         conn.commit()
     started = perf_counter()
+    result: dict[str, Any] = {}
     try:
         state = json.loads(row["state_json"])
         hydrated = _hydrate_market_state(state)
@@ -174,12 +184,12 @@ def run_jev_for_market_state(db_path: str | Path, market_state_id: int,
         return {"status": "OK", "created": True, "recovered": recovered, "runner_called": True, "id": run_id,
                 "result": result}
     except JevError as exc:
-        _persist_result(db_path, run_id, {}, status="ERRO", external_call=True, started=started,
+        _persist_result(db_path, run_id, result, status="ERRO", external_call=True, started=started,
                         error_type=exc.error_type, error_message=str(exc))
         return {"status": "ERRO", "created": True, "recovered": recovered, "runner_called": True, "id": run_id,
                 "error_type": exc.error_type, "error_message": str(exc)}
     except Exception as exc:
-        _persist_result(db_path, run_id, {}, status="ERRO", external_call=True, started=started,
+        _persist_result(db_path, run_id, result, status="ERRO", external_call=True, started=started,
                         error_type=type(exc).__name__, error_message=str(exc))
         return {"status": "ERRO", "created": True, "recovered": recovered, "runner_called": True, "id": run_id,
                 "error_type": type(exc).__name__, "error_message": str(exc)}
