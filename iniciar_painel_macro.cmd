@@ -13,5 +13,6 @@ if exist "%PAINEL_DIR%.env" (
 if not defined MT5_TERMINAL_PATH set "MT5_TERMINAL_PATH=C:\Program Files\Clear Investimentos MT5 Terminal\terminal64.exe"
 set "AUTO_DATA_COLLECTION=true"
 set "AUTO_DECISION_ENGINE=false"
+set "SUPERVISOR_AI_ENABLED=true"
 "%PYTHON_EXE%" -m po3.launcher
 endlocal
