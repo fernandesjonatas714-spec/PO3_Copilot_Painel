@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from po3.auto_decision import process_pending_auto_decisions
+from po3.auto_decision import process_pending_auto_decisions, run_auto_decision_for_market_state
 from po3.decision_engine.schemas import DECISION_ENGINE_VERSION, PROMPT_VERSION
 from po3.storage.migrations import migrate
 from po3.storage.market_repository import insert_market_state
@@ -66,6 +66,26 @@ class O4AutoDecisionTests(unittest.TestCase):
             rows = conn.execute("SELECT market_state_id,decision_engine_version,prompt_version FROM official_decision_runs ORDER BY market_state_id").fetchall()
         self.assertEqual([row[0] for row in rows], [1, 2])
         self.assertEqual(rows[0][1:], (DECISION_ENGINE_VERSION, PROMPT_VERSION))
+
+    def test_calendar_missing_persists_blocked_without_narrative(self):
+        state_id = insert_market_state(
+            self._state(), self.path,
+            cutoff_at_utc="2026-01-01T10:00:00+00:00", symbol="WINV26",
+        )
+        with patch("po3.auto_decision.send_message_detailed") as llm, \
+             patch("po3.auto_decision.configured_model_name", return_value="modelo-free"):
+            result = run_auto_decision_for_market_state(
+                self.path, state_id, model_configured="modelo-free",
+            )
+        llm.assert_not_called()
+        self.assertEqual(result["status"], "BLOQUEADO")
+        with sqlite3.connect(self.path) as conn:
+            row = conn.execute(
+                "SELECT decision_status,narrative_status,narrative,gate_status,decisions_json "
+                "FROM official_decision_runs WHERE market_state_id=?", (state_id,)
+            ).fetchone()
+        self.assertEqual(row[:4], ("BLOQUEADO", "NAO_EXECUTADA", None, "BLOQUEADO"))
+        self.assertEqual(json.loads(row[4])["erro"], "DADOS_CRITICOS_AUSENTES")
 
     def test_pending_queue_is_fifo_and_does_not_starve_old_states(self):
         cutoffs = {

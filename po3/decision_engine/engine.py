@@ -106,7 +106,10 @@ class DecisionEngine:
 
     def run_market_state(self, state: MarketState):
         validation = validate_market_state(state); gate = apply_gate(validation, []) if validation.bloqueado else None
-        if gate:
+        # Calendário ausente é dado crítico mesmo quando a validação geral fica
+        # em PARCIAIS. O bloqueio precisa ocorrer antes de qualquer chamada LLM.
+        if validation.bloqueado or "CALENDARIO" in validation.dados_ausentes:
+            gate = apply_gate(validation, [])
             return StructuredAnalysis(state, validation, [], [], gate, {"status": "NAO_EXECUTADA", "divergencias": []}, None, None, False, error="DADOS_CRITICOS_AUSENTES", model_attempts=[])
         try:
             decisions, meta, repaired = self._call(state, validation)
