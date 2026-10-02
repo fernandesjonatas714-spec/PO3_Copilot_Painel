@@ -23,7 +23,7 @@ CALIBRATION_VERSION = "1.0.0"
 CONFIDENCES = ("ALTA", "MEDIA", "BAIXA")
 BUY = "CONTEXTO_COMPRADOR"
 SELL = "CONTEXTO_VENDEDOR"
-ABSTENTIONS = {"AGUARDAR", "SEM_SETUP", "BLOQUEADO_POR_EVENTO", "INDETERMINADO"}
+ABSTENTIONS = {"AGUARDAR", "SEM_SETUP", "INDETERMINADO"}
 CANONICAL_KEYS = ("ativo", "timestamp", "preco_atual", "tecnico", "mercado_domestico",
                   "mercado_externo", "calendario", "noticias", "fontes", "qualidade_dados", "snapshot")
 _METADATA_KEYS = {"captured_at_utc", "created_at", "observed_at_utc", "updated_at"}

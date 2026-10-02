@@ -234,7 +234,7 @@ def _render_structured_summary(data: dict) -> None:
         "ALTISTA": "Altista", "BAIXISTA": "Baixista", "CONFLITANTE": "Conflitante",
         "CONTEXTO_COMPRADOR": "Contexto comprador", "CONTEXTO_VENDEDOR": "Contexto vendedor",
         "AGUARDAR": "Aguardar confirmação", "SEM_SETUP": "Sem setup válido",
-        "BLOQUEADO_POR_EVENTO": "Bloqueado por evento", "SIM": "Sim", "NAO": "Não", "NÃO": "Não",
+        "SIM": "Sim", "NAO": "Não", "NÃO": "Não",
     }
     def label(key):
         return labels.get(str(decisions.get(key, "INDETERMINADO")), str(decisions.get(key, "Indisponível")))
@@ -631,7 +631,13 @@ def render_operational_supervisor(symbol: str) -> None:
         cols[1].caption(f"MarketState: {latest.get('cutoff_at_utc') or '—'}")
         cols[2].caption(f"O1 causal: {o1['valid_states']}/{o1['required_states']}")
         cols[3].caption(f"Outcomes pendentes: {pending}")
-        st.caption(f"Shadow: {'ON' if security['SHADOW_MODE_ENABLED'] else 'OFF'} · Auto Decision: {'ON' if security['AUTO_DECISION_ENGINE'] else 'OFF'}")
+        shadow = snapshot.get("shadow", {})
+        latest_shadow = shadow.get("latest") or {}
+        shadow_state = "ON" if security["SHADOW_MODE_ENABLED"] else "OFF"
+        shadow_detail = f" · último: {latest_shadow.get('status')} ({latest_shadow.get('cutoff_at_utc')})" if latest_shadow else " · sem execução"
+        if latest_shadow.get("error_type"):
+            shadow_detail += f" · erro: {latest_shadow['error_type']}"
+        st.caption(f"Shadow: {shadow_state}{shadow_detail} · Auto Decision: {'ON' if security['AUTO_DECISION_ENGINE'] else 'OFF'}")
         ai_text = _supervisor_ai_text(snapshot)
         if ai_text:
             st.info(ai_text)

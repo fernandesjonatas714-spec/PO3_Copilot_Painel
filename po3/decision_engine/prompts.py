@@ -11,7 +11,7 @@ def build_decision_prompt(state: dict, validation: dict) -> str:
         {"id_decisao":"contexto_tecnico","tipo":"CHOICE","pergunta":"Classifique o contexto técnico.","opcoes":["ALTISTA","BAIXISTA","NEUTRO","CONFLITANTE","INDETERMINADO"]},
         {"id_decisao":"risco_evento","tipo":"SCORE","pergunta":"Avalie o risco de evento de 0 a 10."},
         {"id_decisao":"conflito_contexto","tipo":"NOUL","pergunta":"Existe conflito relevante entre fatores técnicos, domésticos e macroeconômicos?","opcoes":["SIM","NÃO"]},
-        {"id_decisao":"contexto_operacional","tipo":"CHOICE","pergunta":"Classifique o contexto operacional, sem recomendar ordem.","opcoes":["CONTEXTO_COMPRADOR","CONTEXTO_VENDEDOR","AGUARDAR","SEM_SETUP","BLOQUEADO_POR_EVENTO","INDETERMINADO"]},
+        {"id_decisao":"contexto_operacional","tipo":"CHOICE","pergunta":"Classifique o contexto operacional, sem recomendar ordem.","opcoes":["CONTEXTO_COMPRADOR","CONTEXTO_VENDEDOR","AGUARDAR","SEM_SETUP","INDETERMINADO"]},
     ]
     return DECISION_INSTRUCTIONS + "\nRetorne um objeto com a chave decisoes contendo exatamente os seis itens abaixo e campos: id_decisao, tipo, pergunta, decisao, confianca, status_evidencias, evidencias_conflitantes, dados_ausentes, evidencias, requer_revisao.\n" + json.dumps({"versao": [DECISION_ENGINE_VERSION, PROMPT_VERSION, SCHEMA_VERSION], "perguntas": ids, "validacao": validation, "estado": state}, ensure_ascii=False, default=str)
 
