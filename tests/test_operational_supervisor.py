@@ -1,4 +1,5 @@
 import json
+import ast
 import os
 from pathlib import Path
 import sqlite3
@@ -194,6 +195,22 @@ class OperationalSupervisorTests(unittest.TestCase):
         self.assertIn('@st.fragment(run_every="15s")', source)
         self.assertIn('run_every=f"{seconds}s" if auto else None', source)
         self.assertNotIn("po3.launcher", source)
+
+    def test_real_narrative_records_status_and_allows_critical_transition(self):
+        snapshot = {"symbol": "WINV26", "overall_status": "OPERACAO_NORMAL", "session": {}, "collector": {},
+                    "lease": {}, "latest_market_state": None, "outcomes": {}, "security": {}, "o1_validation": {}}
+        source = Path(__file__).parents[1].joinpath("macro_app.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        function = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "_supervisor_ai_text")
+        source_function = ast.get_source_segment(source, function) or ""
+        self.assertIn('st.session_state["last_supervisor_status"] = decision["status"]', source_function)
+        state = {"last_supervisor_hash": "narrated", "last_supervisor_status": "OPERACAO_NORMAL", "last_supervisor_ai_at": self.now}
+        changed = dict(snapshot)
+        changed["overall_status"] = "ATENCAO_FEED"
+        changed["collector"] = {"feed_liveness_status": "STALE"}
+        decision = supervisor_ai_gate(changed, state, self.now + timedelta(seconds=30))
+        self.assertTrue(decision["critical_transition"])
+        self.assertTrue(decision["should_call"])
 
     def test_same_hash_is_stable(self):
         snap = build_supervisor_snapshot(str(self.path), "WINV26", self.now)

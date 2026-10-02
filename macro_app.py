@@ -596,6 +596,7 @@ def _supervisor_ai_text(snapshot: dict) -> str | None:
     except Exception as exc:
         text = f"A explicação da IA está indisponível ({type(exc).__name__}); o estado determinístico continua ativo."
     st.session_state["last_supervisor_hash"] = decision["hash"]
+    st.session_state["last_supervisor_status"] = decision["status"]
     st.session_state["last_supervisor_ai_at"] = now
     st.session_state["last_supervisor_ai_text"] = text
     return text
