@@ -49,7 +49,10 @@ class DecisionEngine:
 
     def _supports_model_selection(self) -> bool:
         try:
-            return "model_override" in inspect.signature(self.send_detailed).parameters
+            parameters = inspect.signature(self.send_detailed).parameters.values()
+            return any(parameter.name == "model_override" or
+                       parameter.kind == inspect.Parameter.VAR_KEYWORD
+                       for parameter in parameters)
         except (TypeError, ValueError):
             return False
 

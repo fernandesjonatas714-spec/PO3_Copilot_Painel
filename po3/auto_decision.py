@@ -53,10 +53,12 @@ def _narrative_call(message: str, **kwargs) -> dict[str, Any]:
 def _runner(state: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
     model = configured_model_name()
 
-    def decision_call(message: str, **kwargs) -> dict[str, Any]:
+    def decision_call(message: str, *, model_override: str | None = None,
+                      allow_model_fallback: bool = True) -> dict[str, Any]:
         return send_message_detailed(
             message,
-            **kwargs,
+            model_override=model_override,
+            allow_model_fallback=allow_model_fallback,
             system_instruction=(
                 "Responda exclusivamente em JSON válido, em português do Brasil, "
                 "conforme o schema solicitado. Não invente dados."

@@ -40,6 +40,27 @@ class O4StructuredFallbackTests(unittest.TestCase):
         self.assertEqual(result.model_used, "google/gemma-4-31b-it:free")
         self.assertIn("qwen/qwen3.8-27b:free", result.model_attempts)
 
+    def test_runtime_kwargs_sender_uses_free_model_fallback(self):
+        calls = []
+
+        def sender(message: str, **kwargs):
+            model = kwargs.get("model_override")
+            calls.append((model, "repair" if "Corrija" in message else "decision"))
+            if model == "qwen/qwen3.8-27b:free":
+                return {"content": "invalido", "model_used": model}
+            return self.valid_response(model)
+
+        result = DecisionEngine(sender, "qwen/qwen3.8-27b:free").run(self.snapshot, self.context)
+        self.assertEqual(len(result.decisions), 6)
+        self.assertEqual(result.model_used, "google/gemma-4-31b-it:free")
+        self.assertTrue(result.fallback_used)
+        self.assertTrue(result.repair_used)
+        self.assertEqual(calls[:3], [
+            ("qwen/qwen3.8-27b:free", "decision"),
+            ("qwen/qwen3.8-27b:free", "repair"),
+            ("google/gemma-4-31b-it:free", "decision"),
+        ])
+
     def test_all_models_invalid_returns_controlled_error(self):
         def sender(message, model_override=None, allow_model_fallback=True):
             return {"content": "invalido", "model_used": model_override}
