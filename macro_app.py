@@ -15,7 +15,8 @@ from po3.decision_engine import DecisionEngine
 from po3.decision_engine.narrative import generate_narrative
 from po3.learning_store import record_ai_error, recent_analyses, save_analysis
 from po3.analytics import build_evaluation_report
-from po3.v2_config import EVALUATION_ENGINE_ENABLED
+from po3.v2_config import EVALUATION_ENGINE_ENABLED, SUPERVISOR_AI_ENABLED
+from po3.operational_supervisor import build_supervisor_snapshot, supervisor_ai_context, supervisor_ai_gate
 
 DEFAULT_TERMINAL = r"C:\Program Files\Clear Investimentos MT5 Terminal\terminal64.exe"
 
@@ -577,6 +578,65 @@ def render_collection_status(symbol: str) -> None:
         st.caption(f"Último MarketState: {status.get('ultimo_market_state') or '—'} · Outcomes pendentes: {status.get('outcomes_pendentes', 0)}")
 
 
+def _supervisor_ai_text(snapshot: dict) -> str | None:
+    """Gera explicação somente em mudança relevante e respeitando cooldown."""
+    if not SUPERVISOR_AI_ENABLED:
+        return None
+    now = datetime.now().astimezone()
+    decision = supervisor_ai_gate(snapshot, st.session_state, now)
+    if not decision["should_call"]:
+        st.session_state["last_supervisor_status"] = decision["status"]
+        return st.session_state.get("last_supervisor_ai_text")
+    try:
+        text = send_message(
+            "Explique em português do Brasil o estado operacional do PO3 Copilot usando somente os fatos do JSON. "
+            "Não recomende compra ou venda, não indique trades, não altere parâmetros e não invente dados.",
+            system_instruction="Você é a IA explicativa do Supervisor Operacional. Responda apenas sobre status técnico e coleta factual.\n\n" + supervisor_ai_context(snapshot),
+        )
+    except Exception as exc:
+        text = f"A explicação da IA está indisponível ({type(exc).__name__}); o estado determinístico continua ativo."
+    st.session_state["last_supervisor_hash"] = decision["hash"]
+    st.session_state["last_supervisor_status"] = decision["status"]
+    st.session_state["last_supervisor_ai_at"] = now
+    st.session_state["last_supervisor_ai_text"] = text
+    return text
+
+
+def render_operational_supervisor(symbol: str) -> None:
+    """Bloco compacto e somente leitura; a UI não inicia nem altera a coleta."""
+    db_path = os.path.join(os.path.dirname(__file__), "data", "po3_learning.sqlite")
+    try:
+        snapshot = build_supervisor_snapshot(db_path, symbol)
+    except Exception as exc:
+        with st.container(border=True):
+            st.markdown("**SUPERVISOR V2**")
+            st.error(f"Supervisor indisponível: {type(exc).__name__}")
+        return
+    session = snapshot["session"]
+    collector = snapshot["collector"]
+    latest = snapshot.get("latest_market_state") or {}
+    o1 = snapshot["o1_validation"]
+    security = snapshot["security"]
+    pending = sum(v for k, v in snapshot["outcomes"]["por_status"].items() if k in {"PENDENTE", "PENDENTE_DADOS"})
+    with st.container(border=True):
+        st.markdown("**SUPERVISOR V2**")
+        st.markdown(f"**Estado geral:** `{snapshot['overall_status']}`")
+        cols = st.columns(4)
+        cols[0].caption(f"Sessão: {'ABERTA' if session['market_active'] else 'FECHADA'}")
+        cols[1].caption(f"Feed: {collector.get('feed_liveness_status') or '—'}")
+        cols[2].caption(f"Clock: {collector.get('clock_alignment_status') or '—'}")
+        cols[3].caption(f"Lease: {'ATIVO' if snapshot['lease']['active'] else 'INATIVO'}")
+        cols = st.columns(4)
+        cols[0].caption(f"Último M1: {snapshot['latest_m1'].get('timestamp_utc') or '—'}")
+        cols[1].caption(f"MarketState: {latest.get('cutoff_at_utc') or '—'}")
+        cols[2].caption(f"O1 causal: {o1['valid_states']}/{o1['required_states']}")
+        cols[3].caption(f"Outcomes pendentes: {pending}")
+        st.caption(f"Shadow: {'ON' if security['SHADOW_MODE_ENABLED'] else 'OFF'} · Auto Decision: {'ON' if security['AUTO_DECISION_ENGINE'] else 'OFF'}")
+        ai_text = _supervisor_ai_text(snapshot)
+        if ai_text:
+            st.info(ai_text)
+
+
 def render_evaluation(symbol: str) -> None:
     """Área somente leitura; não coleta, não chama LLM e não altera o banco."""
     if not EVALUATION_ENGINE_ENABLED:
@@ -636,6 +696,11 @@ def live():
     except MT5ReadError as exc:
         st.error(str(exc)); st.info("Abra o MT5, mantenha o WIN visível e confirme que o terminal está conectado.")
 
+@st.fragment(run_every="15s")
+def supervisor_live():
+    render_operational_supervisor(symbol)
+
+supervisor_live()
 live()
 if "latest_snapshot" in st.session_state:
     render_collection_status(symbol)
