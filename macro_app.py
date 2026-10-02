@@ -106,7 +106,18 @@ def _compact_table(headers, rows, numeric_columns=()):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _economic_calendar():
-    return fetch_official_calendar()
+    try:
+        return fetch_official_calendar()
+    except Exception as exc:
+        # O calendário é um enriquecimento opcional da UI. Uma falha de
+        # rede/fonte não pode interromper o fragmento que renderiza o painel
+        # principal, seus tempos e o termômetro.
+        return {
+            "available": False,
+            "events": [],
+            "source": "não disponível",
+            "message": f"Fonte temporariamente indisponível ({type(exc).__name__}).",
+        }
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -825,6 +836,7 @@ def live():
     try:
         snapshot = read_snapshot(terminal, symbol)
         st.session_state["latest_snapshot"] = snapshot
+        render_panel(snapshot)
     except MT5ReadError as exc:
         st.session_state["snapshot_error"] = str(exc)
 
