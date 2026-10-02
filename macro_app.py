@@ -819,9 +819,15 @@ def render_jev_shadow(symbol: str) -> None:
             if official_value is not None and jev_value is not None:
                 comparable_count += 1
                 agreement_count += int(agreement is True)
+            display_value = jev_value
+            if key == "risco_evento" and jev_value is not None:
+                try:
+                    display_value = f"{float(jev_value):.1f}"
+                except (TypeError, ValueError):
+                    display_value = jev_value
             rows.append({
                 "Análise": question,
-                "JEV": jev_value if jev_value is not None else "—",
+                "JEV": display_value if display_value is not None else "—",
                 "Acordo Oficial": "SIM" if agreement is True else "NÃO" if agreement is False else "—",
             })
         st.dataframe(rows, hide_index=True, width="stretch")
