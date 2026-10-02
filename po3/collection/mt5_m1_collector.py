@@ -128,9 +128,15 @@ def collect_once(config: CollectorConfig, mt5: Any, owner_id: str | None = None,
 
 def _default_snapshot_provider(config, cutoff, alignment_detector, mt5_session=None):
     from po3.mt5_reader import read_snapshot_at_cutoff
+    from po3.external_data import fetch_official_calendar
     if not alignment_detector.usable:
         raise RuntimeError("MT5_ALIGNMENT_UNAVAILABLE: snapshot causal sem alinhamento validado")
-    return read_snapshot_at_cutoff(config.terminal_path or "", config.symbol, cutoff, normalize_timestamp=alignment_detector.normalize, mt5_session=mt5_session, manage_connection=mt5_session is None), {}
+    snapshot = read_snapshot_at_cutoff(config.terminal_path or "", config.symbol, cutoff, normalize_timestamp=alignment_detector.normalize, mt5_session=mt5_session, manage_connection=mt5_session is None)
+    # O snapshot causal e o calendário factual são entradas distintas: o
+    # calendário precisa ser propagado ao MarketState para que sua qualidade
+    # seja determinada pelo mesmo dado que o painel consulta.
+    calendar = fetch_official_calendar()
+    return snapshot, {"calendar": calendar, "news": {}, "quotes": {}}
 
 
 def run_worker(config: CollectorConfig, mt5: Any, stop_event: Event | None = None, max_cycles: int | None = None, snapshot_provider: Callable | None = None) -> None:

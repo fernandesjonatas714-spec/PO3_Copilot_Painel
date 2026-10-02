@@ -70,7 +70,8 @@ class CausalSnapshotTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as handle:
             terminal = handle.name
         try:
-            with patch("po3.mt5_reader._load_package", return_value=self.fake):
+            with patch("po3.mt5_reader._load_package", return_value=self.fake), \
+                 patch("po3.external_data.fetch_official_calendar", return_value={"available": True, "events": [], "source": "teste"}):
                 snapshot, _ = _default_snapshot_provider(
                     CollectorConfig("WIN", ":memory:", terminal_path=terminal),
                     self.cutoff, self.detector)
@@ -85,6 +86,19 @@ class CausalSnapshotTests(unittest.TestCase):
                     self.assertNotEqual(row["close"], 999999.0)
             self.assertTrue(all(str(v.get("as_of", "")).startswith("2026-01-01T17:00")
                                 for v in snapshot.macro["frames"].values()))
+        finally:
+            Path(terminal).unlink(missing_ok=True)
+
+    def test_default_provider_propagates_calendar_context(self):
+        with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as handle:
+            terminal = handle.name
+        try:
+            calendar = {"available": True, "events": [{"evento": "CPI", "impacto": "ALTO"}], "source": "teste"}
+            with patch("po3.mt5_reader._load_package", return_value=self.fake), \
+                 patch("po3.external_data.fetch_official_calendar", return_value=calendar):
+                _, context = _default_snapshot_provider(CollectorConfig("WIN", ":memory:", terminal_path=terminal), self.cutoff, self.detector)
+            self.assertEqual(context["calendar"], calendar)
+            self.assertTrue(context["calendar"]["available"])
         finally:
             Path(terminal).unlink(missing_ok=True)
 
