@@ -26,17 +26,24 @@ def main() -> int:
     env = os.environ.copy()
     creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
     stop_file = root / "data" / ".po3_worker.stop"
+    ai_stop_file = root / "data" / ".po3_ai_worker.stop"
     stop_file.unlink(missing_ok=True)
+    ai_stop_file.unlink(missing_ok=True)
     env["PO3_WORKER_STOP_FILE"] = str(stop_file)
+    env["PO3_AI_WORKER_STOP_FILE"] = str(ai_stop_file)
     def _raise_keyboard_interrupt(_signum, _frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGINT, _raise_keyboard_interrupt)
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, _raise_keyboard_interrupt)
     worker = None
+    ai_worker = None
     if env.get("AUTO_DATA_COLLECTION", "true").lower() in {"1","true","sim","yes"}:
         worker = subprocess.Popen([py, "-m", "po3.collection.mt5_m1_collector"], cwd=root, env=env,
                                   creationflags=creationflags)
+    if env.get("SHADOW_MODE_ENABLED", "false").lower() in {"1", "true", "sim", "yes"} or env.get("AUTO_DECISION_ENGINE", "false").lower() in {"1", "true", "sim", "yes"}:
+        ai_worker = subprocess.Popen([py, "-m", "po3.ai_worker"], cwd=root, env=env,
+                                     creationflags=creationflags)
     streamlit = subprocess.Popen([py, "-m", "streamlit", "run", str(root / "macro_app.py"),
                                   "--server.address", "127.0.0.1", "--server.port", "8501",
                                   "--server.headless", "false", "--server.showEmailPrompt", "false",
@@ -56,10 +63,17 @@ def main() -> int:
             if not _stop_process_gracefully(worker):
                 worker.terminate()
                 worker.wait(timeout=10)
+        if ai_worker is not None and ai_worker.poll() is None:
+            ai_stop_file.parent.mkdir(parents=True, exist_ok=True)
+            ai_stop_file.write_text("stop\n", encoding="ascii")
+            if not _stop_process_gracefully(ai_worker):
+                ai_worker.terminate()
+                ai_worker.wait(timeout=10)
         if streamlit.poll() is None:
             if not _stop_process_gracefully(streamlit):
                 streamlit.terminate()
         stop_file.unlink(missing_ok=True)
+        ai_stop_file.unlink(missing_ok=True)
 
 if __name__ == "__main__":
     raise SystemExit(main())

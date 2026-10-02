@@ -129,6 +129,9 @@ def migrate(db_path: str | Path) -> str:
           consensus_status TEXT,
           confidence TEXT,
           context_operational TEXT,
+          model_attempts_json TEXT NOT NULL DEFAULT '[]',
+          decision_status TEXT,
+          narrative_status TEXT,
           decisions_json TEXT NOT NULL,
           narrative TEXT,
           status TEXT NOT NULL,
@@ -159,6 +162,10 @@ def migrate(db_path: str | Path) -> str:
             conn.execute("ALTER TABLE collector_runtime_status ADD COLUMN detected_offset_seconds REAL")
         if "normalized_tick_at_utc" not in runtime_columns:
             conn.execute("ALTER TABLE collector_runtime_status ADD COLUMN normalized_tick_at_utc TEXT")
+        official_columns = {row[1] for row in conn.execute("PRAGMA table_info(official_decision_runs)")}
+        for column, definition in (("model_attempts_json", "TEXT NOT NULL DEFAULT '[]'"), ("decision_status", "TEXT"), ("narrative_status", "TEXT")):
+            if column not in official_columns:
+                conn.execute(f"ALTER TABLE official_decision_runs ADD COLUMN {column} {definition}")
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?,?)",
                      (CURRENT_SCHEMA_VERSION, datetime.now(timezone.utc).isoformat()))
     return CURRENT_SCHEMA_VERSION

@@ -40,7 +40,7 @@ def _operational_context(result: dict[str, Any]) -> str | None:
     return None
 
 
-def _narrative_call(message: str) -> dict[str, Any]:
+def _narrative_call(message: str, **kwargs) -> dict[str, Any]:
     return send_message_detailed(
         message,
         system_instruction=(
@@ -53,9 +53,10 @@ def _narrative_call(message: str) -> dict[str, Any]:
 def _runner(state: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
     model = configured_model_name()
 
-    def decision_call(message: str) -> dict[str, Any]:
+    def decision_call(message: str, **kwargs) -> dict[str, Any]:
         return send_message_detailed(
             message,
+            **kwargs,
             system_instruction=(
                 "Responda exclusivamente em JSON válido, em português do Brasil, "
                 "conforme o schema solicitado. Não invente dados."
@@ -65,22 +66,27 @@ def _runner(state: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
     hydrated = _hydrate_market_state(state)
     structured = DecisionEngine(decision_call, model).run_market_state(hydrated)
     result = structured.to_dict()
-    # DADOS_CRITICOS_AUSENTES ainda é um resultado estruturado válido: o Gate
-    # informa BLOQUEADO e a narrativa pode explicar o contexto sem fabricar
-    # decisões. Erros de parsing/LLM, por outro lado, não seguem para narrativa.
-    if structured.error and structured.error != "DADOS_CRITICOS_AUSENTES":
+    # Dados críticos ausentes são um bloqueio factual, não uma análise oficial
+    # válida. Portanto não há narrativa nem chamada adicional de IA.
+    if structured.error:
         return result, None
-    narrative = generate_narrative(
-        _narrative_call,
-        structured.state,
-        structured.decisions,
-        structured.gate,
-        structured.consensus,
-        structured.model_used,
-    )
-    structured.narrative = narrative.get("content")
-    structured.model_used = narrative.get("model_used") or structured.model_used
-    structured.fallback_used = structured.fallback_used or bool(narrative.get("fallback_used"))
+    try:
+        narrative = generate_narrative(
+            _narrative_call,
+            structured.state,
+            structured.decisions,
+            structured.gate,
+            structured.consensus,
+            structured.model_used,
+        )
+        structured.narrative = narrative.get("content")
+        structured.model_used = narrative.get("model_used") or structured.model_used
+        structured.fallback_used = structured.fallback_used or bool(narrative.get("fallback_used"))
+    except Exception as exc:
+        structured.narrative = None
+        result = structured.to_dict()
+        result["_narrative_error"] = type(exc).__name__
+        return result, None
     return structured.to_dict(), structured.narrative
 
 
@@ -128,7 +134,10 @@ def run_auto_decision_for_market_state(
         state = json.loads(row["state_json"])
         result, narrative = _runner(state)
         error = result.get("erro")
-        status = "ERRO" if error else "OK"
+        narrative_error = result.pop("_narrative_error", None)
+        decision_status = "BLOQUEADO" if error == "DADOS_CRITICOS_AUSENTES" else ("OK" if len(result.get("decisoes", [])) == 6 and not error else "ERRO")
+        narrative_status = "ERRO" if narrative_error else ("OK" if narrative else "NAO_EXECUTADA")
+        status = decision_status
         gate = result.get("gate") or {}
         consensus = result.get("consenso") or {}
         decisions_json = json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
@@ -137,13 +146,15 @@ def run_auto_decision_for_market_state(
             conn.execute(
                 """UPDATE official_decision_runs SET model_used=?,fallback_used=?,repair_used=?,
                    gate_status=?,consensus_status=?,confidence=?,context_operational=?,
+                   model_attempts_json=?,decision_status=?,narrative_status=?,
                    decisions_json=?,narrative=?,status=?,error_type=?,error_message=?,duration_seconds=?
                    WHERE id=?""",
                 (result.get("modelo_utilizado"), int(bool(result.get("fallback_utilizado"))),
                  int(bool(result.get("reparo_json_utilizado"))), gate.get("status"),
                  consensus.get("status"), _confidence(result), _operational_context(result),
-                 decisions_json, narrative, status, "DecisionEngineError" if error else None,
-                 str(error) if error else None, time.perf_counter() - started, run_id),
+                 json.dumps(result.get("model_attempts", [])), decision_status, narrative_status,
+                 decisions_json, narrative, status, "DecisionEngineError" if error else narrative_error,
+                 str(error) if error else narrative_error, time.perf_counter() - started, run_id),
             )
             conn.commit()
         finally:

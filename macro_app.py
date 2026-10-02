@@ -201,9 +201,10 @@ def _run_daily_analysis(snapshot):
     if not _decision_engine_enabled():
         return _run_daily_analysis_legacy(snapshot, context)
     try:
-        def detailed(message):
+        def detailed(message, **kwargs):
             return send_message_detailed(
                 message,
+                **kwargs,
                 system_instruction="Responda exclusivamente em JSON válido, em português do Brasil, conforme o schema solicitado. Não invente dados e não produza narrativa.",
             )
         structured = DecisionEngine(detailed, configured_model_name()).run(snapshot, context)
@@ -626,6 +627,7 @@ def render_operational_supervisor(symbol: str) -> None:
         cols[1].caption(f"Feed: {collector.get('feed_liveness_status') or '—'}")
         cols[2].caption(f"Clock: {collector.get('clock_alignment_status') or '—'}")
         cols[3].caption(f"Lease: {'ATIVO' if snapshot['lease']['active'] else 'INATIVO'}")
+        st.caption(f"Lease IA: {'ATIVO' if snapshot.get('ai_worker', {}).get('active') else 'INATIVO'}")
         cols = st.columns(4)
         cols[0].caption(f"Último M1: {snapshot['latest_m1'].get('timestamp_utc') or '—'}")
         cols[1].caption(f"MarketState: {latest.get('cutoff_at_utc') or '—'}")

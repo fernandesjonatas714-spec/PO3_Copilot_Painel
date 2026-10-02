@@ -37,7 +37,7 @@ class O4AutoDecisionTests(unittest.TestCase):
     def test_new_market_state_generates_one_official_analysis_and_restart_is_idempotent(self):
         state_id = insert_market_state(self._state(), self.path,
                                        cutoff_at_utc="2026-01-01T10:00:00+00:00", symbol="WINV26")
-        result = {"decisoes": [{"id_decisao": "contexto_operacional", "decisao": "AGUARDAR", "confianca": "MEDIA"}],
+        result = {"decisoes": [{"id_decisao": key, "decisao": "AGUARDAR", "confianca": "MEDIA"} for key in ("regime_macro", "contexto_domestico", "contexto_tecnico", "risco_evento", "conflito_contexto", "contexto_operacional")],
                   "gate": {"status": "VALIDO"}, "consenso": {"status": "NAO_EXECUTADA"},
                   "modelo_utilizado": "modelo-free", "fallback_utilizado": False,
                   "reparo_json_utilizado": False}
@@ -76,7 +76,9 @@ class O4AutoDecisionTests(unittest.TestCase):
         launcher = Path(__file__).parents[1].joinpath("iniciar_painel_macro.cmd").read_text(encoding="utf-8")
         self.assertIn('set "AUTO_DECISION_ENGINE=true"', launcher)
         collector = Path(__file__).parents[1].joinpath("po3", "collection", "mt5_m1_collector.py").read_text(encoding="utf-8")
-        self.assertIn("process_pending_auto_decisions", collector)
+        self.assertNotIn("process_pending_auto_decisions", collector)
+        ai_worker = Path(__file__).parents[1].joinpath("po3", "ai_worker.py").read_text(encoding="utf-8")
+        self.assertIn("process_pending_auto_decisions", ai_worker)
         self.assertNotIn("order_send", collector)
 
 

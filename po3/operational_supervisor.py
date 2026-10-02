@@ -162,6 +162,7 @@ def build_supervisor_snapshot(db_path: str, symbol: str, now_utc: datetime | Non
             counts[table] = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
         runtime = conn.execute("SELECT * FROM collector_runtime_status WHERE symbol=?", (symbol,)).fetchone()
         lease = conn.execute("SELECT * FROM collector_leases WHERE collector_name='po3-m1' AND symbol=?", (symbol,)).fetchone()
+        ai_lease = conn.execute("SELECT * FROM collector_leases WHERE collector_name='po3-ai' AND symbol=?", (symbol,)).fetchone()
         latest_m1 = conn.execute("SELECT MAX(timestamp_utc) FROM market_bars_m1 WHERE symbol=?", (symbol,)).fetchone()[0]
         latest_state = conn.execute("SELECT * FROM market_states WHERE symbol=? ORDER BY cutoff_at_utc DESC,id DESC LIMIT 1", (symbol,)).fetchone()
         latest_shadow = conn.execute("SELECT id,market_state_id,cutoff_at_utc,status,model_configured,model_used,error_type,error_message,created_at_utc FROM shadow_runs WHERE symbol=? ORDER BY cutoff_at_utc DESC,id DESC LIMIT 1", (symbol,)).fetchone()
@@ -191,6 +192,7 @@ def build_supervisor_snapshot(db_path: str, symbol: str, now_utc: datetime | Non
         runtime_data = dict(runtime) if runtime else {}
         lease_data = dict(lease) if lease else {}
         lease_active = bool(lease and _utc(lease["expires_at"]) and _utc(lease["expires_at"]) > now)
+        ai_lease_active = bool(ai_lease and _utc(ai_lease["expires_at"]) and _utc(ai_lease["expires_at"]) > now)
         security = {key: flags().get(key, False) for key in ("AUTO_DECISION_ENGINE", "SHADOW_MODE_ENABLED", "REPLAY_ENABLED", "CALIBRATION_ENABLED", "MODEL_BENCHMARK_ENABLED")}
         o1 = _validate_o1(conn, symbol, now)
     finally:
@@ -227,6 +229,7 @@ def build_supervisor_snapshot(db_path: str, symbol: str, now_utc: datetime | Non
         "session": {"market_active": active, "local_time": local, "session_status": "ABERTA" if active else "FECHADA"},
         "collector": {key: runtime_data.get(key) for key in ("status", "feed_liveness_status", "clock_alignment_status", "detected_offset_seconds", "normalized_tick_at_utc", "last_closed_at_utc", "feed_lag_seconds")},
         "lease": {"active": lease_active, "owner_id": lease_data.get("owner_id"), "expires_at": lease_data.get("expires_at")},
+        "ai_worker": {"active": ai_lease_active, "owner_id": ai_lease["owner_id"] if ai_lease else None, "expires_at": ai_lease["expires_at"] if ai_lease else None},
         "database": {"integrity_status": integrity, **counts},
         "latest_m1": {"timestamp_utc": latest_m1}, "latest_market_state": latest,
         "outcomes": outcomes,
