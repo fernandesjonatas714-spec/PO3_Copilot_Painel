@@ -123,6 +123,12 @@ def migrate(db_path: str | Path) -> str:
           schema_version TEXT NOT NULL,
           model_configured TEXT NOT NULL,
           model_used TEXT,
+          decision_model_used TEXT,
+          decision_model_attempts_json TEXT NOT NULL DEFAULT '[]',
+          decision_fallback_used INTEGER NOT NULL DEFAULT 0,
+          decision_repair_used INTEGER NOT NULL DEFAULT 0,
+          narrative_model_used TEXT,
+          narrative_fallback_used INTEGER NOT NULL DEFAULT 0,
           fallback_used INTEGER NOT NULL DEFAULT 0,
           repair_used INTEGER NOT NULL DEFAULT 0,
           gate_status TEXT,
@@ -163,7 +169,7 @@ def migrate(db_path: str | Path) -> str:
         if "normalized_tick_at_utc" not in runtime_columns:
             conn.execute("ALTER TABLE collector_runtime_status ADD COLUMN normalized_tick_at_utc TEXT")
         official_columns = {row[1] for row in conn.execute("PRAGMA table_info(official_decision_runs)")}
-        for column, definition in (("model_attempts_json", "TEXT NOT NULL DEFAULT '[]'"), ("decision_status", "TEXT"), ("narrative_status", "TEXT")):
+        for column, definition in (("model_attempts_json", "TEXT NOT NULL DEFAULT '[]'"), ("decision_model_used", "TEXT"), ("decision_model_attempts_json", "TEXT NOT NULL DEFAULT '[]'"), ("decision_fallback_used", "INTEGER NOT NULL DEFAULT 0"), ("decision_repair_used", "INTEGER NOT NULL DEFAULT 0"), ("narrative_model_used", "TEXT"), ("narrative_fallback_used", "INTEGER NOT NULL DEFAULT 0"), ("decision_status", "TEXT"), ("narrative_status", "TEXT")):
             if column not in official_columns:
                 conn.execute(f"ALTER TABLE official_decision_runs ADD COLUMN {column} {definition}")
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?,?)",

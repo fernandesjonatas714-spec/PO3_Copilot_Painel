@@ -34,9 +34,11 @@ class StructuredAnalysis:
     repair_used: bool = False
     model_attempts: list[str] | None = None
     second_model_attempts: list[str] | None = None
+    narrative_model_used: str | None = None
+    narrative_fallback_used: bool = False
 
     def to_dict(self):
-        return {"versoes": {"decision_engine": DECISION_ENGINE_VERSION, "prompt": PROMPT_VERSION, "schema": SCHEMA_VERSION}, "state": self.state.to_dict(), "validation": self.validation.to_dict(), "decisoes": [x.to_dict() for x in self.decisions], "segunda_analise": [x.to_dict() for x in self.second_decisions], "gate": self.gate.to_dict(), "consenso": self.consensus, "modelo_configurado": self.model_configured, "modelo_utilizado": self.model_used, "model_attempts": self.model_attempts or [], "fallback_utilizado": self.fallback_used, "segunda_modelo_utilizado": self.second_model_used, "segunda_model_attempts": self.second_model_attempts or [], "segunda_fallback_utilizado": self.second_fallback_used, "reparo_json_utilizado": self.repair_used, "narrativa": self.narrative, "erro": self.error}
+        return {"versoes": {"decision_engine": DECISION_ENGINE_VERSION, "prompt": PROMPT_VERSION, "schema": SCHEMA_VERSION}, "state": self.state.to_dict(), "validation": self.validation.to_dict(), "decisoes": [x.to_dict() for x in self.decisions], "segunda_analise": [x.to_dict() for x in self.second_decisions], "gate": self.gate.to_dict(), "consenso": self.consensus, "modelo_configurado": self.model_configured, "modelo_utilizado": self.model_used, "model_used": self.model_used, "decision_model_used": self.model_used, "decision_model_attempts": self.model_attempts or [], "decision_fallback_used": self.fallback_used, "decision_repair_used": self.repair_used, "model_attempts": self.model_attempts or [], "fallback_utilizado": self.fallback_used, "segunda_modelo_utilizado": self.second_model_used, "segunda_model_attempts": self.second_model_attempts or [], "segunda_fallback_utilizado": self.second_fallback_used, "reparo_json_utilizado": self.repair_used, "narrative_model_used": self.narrative_model_used, "narrative_fallback_used": self.narrative_fallback_used, "modelo_narrativa_utilizado": self.narrative_model_used, "fallback_narrativa_utilizado": self.narrative_fallback_used, "narrativa": self.narrative, "erro": self.error}
 
 class DecisionEngine:
     def __init__(self, send_detailed, configured_model):

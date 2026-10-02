@@ -71,6 +71,8 @@ def _runner(state: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
     if structured.error:
         return result, None
     try:
+        narrative_model_used = None
+        narrative_fallback_used = False
         narrative = generate_narrative(
             _narrative_call,
             structured.state,
@@ -80,10 +82,14 @@ def _runner(state: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
             structured.model_used,
         )
         structured.narrative = narrative.get("content")
-        structured.model_used = narrative.get("model_used") or structured.model_used
-        structured.fallback_used = structured.fallback_used or bool(narrative.get("fallback_used"))
+        narrative_model_used = narrative.get("model_used")
+        narrative_fallback_used = bool(narrative.get("fallback_used"))
+        structured.narrative_model_used = narrative_model_used
+        structured.narrative_fallback_used = narrative_fallback_used
     except Exception as exc:
         structured.narrative = None
+        structured.narrative_model_used = None
+        structured.narrative_fallback_used = False
         result = structured.to_dict()
         result["_narrative_error"] = type(exc).__name__
         return result, None
@@ -145,12 +151,18 @@ def run_auto_decision_for_market_state(
         try:
             conn.execute(
                 """UPDATE official_decision_runs SET model_used=?,fallback_used=?,repair_used=?,
+                   decision_model_used=?,decision_model_attempts_json=?,decision_fallback_used=?,decision_repair_used=?,
+                   narrative_model_used=?,narrative_fallback_used=?,
                    gate_status=?,consensus_status=?,confidence=?,context_operational=?,
                    model_attempts_json=?,decision_status=?,narrative_status=?,
                    decisions_json=?,narrative=?,status=?,error_type=?,error_message=?,duration_seconds=?
                    WHERE id=?""",
                 (result.get("modelo_utilizado"), int(bool(result.get("fallback_utilizado"))),
-                 int(bool(result.get("reparo_json_utilizado"))), gate.get("status"),
+                 int(bool(result.get("reparo_json_utilizado"))), result.get("decision_model_used") or result.get("modelo_utilizado"),
+                 json.dumps(result.get("decision_model_attempts", result.get("model_attempts", []))),
+                 int(bool(result.get("decision_fallback_used", result.get("fallback_utilizado")))),
+                 int(bool(result.get("decision_repair_used", result.get("reparo_json_utilizado")))),
+                 result.get("narrative_model_used"), int(bool(result.get("narrative_fallback_used"))), gate.get("status"),
                  consensus.get("status"), _confidence(result), _operational_context(result),
                  json.dumps(result.get("model_attempts", [])), decision_status, narrative_status,
                  decisions_json, narrative, status, "DecisionEngineError" if error else narrative_error,

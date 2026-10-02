@@ -9,7 +9,7 @@ import argparse
 import os
 import signal
 from dataclasses import dataclass
-from threading import Event
+from threading import Event, Thread
 
 from po3.storage.migrations import migrate
 from po3.storage.market_repository import acquire_lease, heartbeat, release_lease
@@ -23,7 +23,21 @@ class AIWorkerConfig:
     db_path: str
     poll_seconds: int = 10
     lease_ttl_seconds: int = 90
+    heartbeat_interval_seconds: float = 25.0
     lease_name: str = "po3-ai"
+
+
+def _heartbeat_loop(config: AIWorkerConfig, owner: str, stop_event: Event,
+                    heartbeat_stop: Event, lease_lost: Event) -> None:
+    """Renova o lease independentemente de chamadas lentas de IA."""
+    interval = max(0.25, min(float(config.heartbeat_interval_seconds),
+                              max(0.25, config.lease_ttl_seconds / 3.0)))
+    while not heartbeat_stop.wait(interval):
+        if not heartbeat(config.lease_name, config.symbol, owner, config.db_path,
+                         config.lease_ttl_seconds):
+            lease_lost.set()
+            stop_event.set()
+            return
 
 
 def run_ai_worker(config: AIWorkerConfig, stop_event: Event | None = None, max_cycles: int | None = None) -> None:
@@ -32,6 +46,15 @@ def run_ai_worker(config: AIWorkerConfig, stop_event: Event | None = None, max_c
     if not owner:
         raise RuntimeError("Outro AI worker possui o lease")
     stop_event = stop_event or Event()
+    heartbeat_stop = Event()
+    lease_lost = Event()
+    heartbeat_thread = Thread(
+        target=_heartbeat_loop,
+        args=(config, owner, stop_event, heartbeat_stop, lease_lost),
+        name="po3-ai-heartbeat",
+        daemon=True,
+    )
+    heartbeat_thread.start()
     stop_file = os.getenv("PO3_AI_WORKER_STOP_FILE")
     shadow_runner = None
     shadow_model = None
@@ -58,18 +81,20 @@ def run_ai_worker(config: AIWorkerConfig, stop_event: Event | None = None, max_c
                     )
                 except Exception as exc:
                     print(f"AI Shadow: {type(exc).__name__}: {exc}", flush=True)
-            if AUTO_DECISION_ENGINE:
+            if AUTO_DECISION_ENGINE and not lease_lost.is_set() and not stop_event.is_set():
                 try:
                     from po3.auto_decision import process_pending_auto_decisions
                     process_pending_auto_decisions(config.db_path, symbol=config.symbol, limit=1)
                 except Exception as exc:
                     print(f"AI Auto Decision: {type(exc).__name__}: {exc}", flush=True)
-            if not heartbeat(config.lease_name, config.symbol, owner, config.db_path, config.lease_ttl_seconds):
+            if lease_lost.is_set():
                 raise RuntimeError("Lease do AI worker perdido")
             cycles += 1
             if max_cycles is None:
                 stop_event.wait(max(1, config.poll_seconds))
     finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=max(1.0, config.heartbeat_interval_seconds + 1.0))
         release_lease(config.lease_name, config.symbol, owner, config.db_path)
 
 

@@ -72,6 +72,33 @@ class O4AutoDecisionTests(unittest.TestCase):
         self.assertNotIn("observed_outcomes", source)
         self.assertNotIn("market_bars_m1", source)
 
+    def test_decision_and_narrative_models_are_persisted_separately(self):
+        state_id = insert_market_state(self._state(), self.path,
+                                       cutoff_at_utc="2026-01-01T10:00:00+00:00", symbol="WINV26")
+        result = {"decisoes": [{"id_decisao": key, "decisao": "AGUARDAR", "confianca": "MEDIA"}
+                                for key in ("regime_macro", "contexto_domestico", "contexto_tecnico",
+                                            "risco_evento", "conflito_contexto", "contexto_operacional")],
+                  "gate": {"status": "VALIDO"}, "consenso": {"status": "NAO_EXECUTADA"},
+                  "modelo_utilizado": "google/gemma-4-31b-it:free",
+                  "decision_model_used": "google/gemma-4-31b-it:free",
+                  "decision_model_attempts": ["qwen/qwen3.8-27b:free", "google/gemma-4-31b-it:free"],
+                  "decision_fallback_used": True, "decision_repair_used": True,
+                  "narrative_model_used": "qwen/qwen3.8-27b:free",
+                  "narrative_fallback_used": False}
+        with patch("po3.auto_decision._runner", return_value=(result, "MACROECONOMIA E DIA A DIA\n\nIMPACTO NA BOLSA\n\nINSIGHT OPERACIONAL")), \
+             patch("po3.auto_decision.configured_model_name", return_value="qwen/qwen3.8-27b:free"):
+            created = process_pending_auto_decisions(self.path, symbol="WINV26", limit=1)
+        self.assertEqual(created["created"], 1)
+        with sqlite3.connect(self.path) as conn:
+            row = conn.execute("""SELECT model_used,decision_model_used,decision_model_attempts_json,
+                decision_fallback_used,decision_repair_used,narrative_model_used,narrative_fallback_used
+                FROM official_decision_runs WHERE market_state_id=?""", (state_id,)).fetchone()
+        self.assertEqual(row[0], "google/gemma-4-31b-it:free")
+        self.assertEqual(row[1], "google/gemma-4-31b-it:free")
+        self.assertIn("qwen/qwen3.8-27b:free", row[2])
+        self.assertEqual(row[3:5], (1, 1))
+        self.assertEqual(row[5:], ("qwen/qwen3.8-27b:free", 0))
+
     def test_launcher_enables_auto_decision_without_orders(self):
         launcher = Path(__file__).parents[1].joinpath("iniciar_painel_macro.cmd").read_text(encoding="utf-8")
         self.assertIn('set "AUTO_DECISION_ENGINE=true"', launcher)
