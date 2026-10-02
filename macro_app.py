@@ -414,7 +414,6 @@ def render_panel(snapshot):
         if st.button("Atualizar calendário", key="refresh_calendar", help="Limpa o cache e consulta as fontes oficiais novamente"):
             _economic_calendar.clear()
             st.rerun()
-        st.caption(f"Calendário Econômico · horários em America/Sao_Paulo · fonte: {calendar.get('source', 'não disponível')}.")
         if calendar.get("available") and calendar.get("events"):
             next_high = get_next_high_impact_event(calendar["events"])
             if next_high and next_high.get("datetime"):
@@ -429,7 +428,7 @@ def render_panel(snapshot):
             st.info(f"Calendário econômico temporariamente indisponível. {calendar.get('message', '')}")
     missing = [item for item in macro.get("missing", []) if str(item).strip().lower() != "volatilidade"]
     if missing:
-        st.caption("Grupos sem dados no MT5: " + ", ".join(missing))
+        pass
 
 
 def _local_chat_answer(question: str, snapshot) -> str:
