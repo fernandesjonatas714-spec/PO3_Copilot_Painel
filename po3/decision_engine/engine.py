@@ -69,6 +69,10 @@ class DecisionEngine:
 
     def run(self, snapshot, context):
         state = build_market_state(snapshot, context)
+        return self.run_market_state(state)
+
+    def run_market_state(self, state: MarketState):
+        """Executa sobre um MarketState já congelado, sem reconstruí-lo."""
         validation = validate_market_state(state)
         gate = apply_gate(validation, []) if validation.bloqueado else None
         if gate:

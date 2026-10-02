@@ -195,6 +195,8 @@ def build_supervisor_snapshot(db_path: str, symbol: str, now_utc: datetime | Non
         overall = "ATENCAO_SEGURANCA"
     elif integrity != "ok":
         overall = "ATENCAO_BANCO"
+    elif security["SHADOW_MODE_ENABLED"] and shadow_data and shadow_data.get("status") == "ERRO":
+        overall = "ATENCAO_SHADOW"
     elif not active:
         overall = "AGUARDANDO_SESSAO"
     elif runtime_data.get("clock_alignment_status") not in SAFE_CLOCK_STATUSES:
