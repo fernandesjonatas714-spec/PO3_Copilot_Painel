@@ -201,9 +201,10 @@ def _run_daily_analysis(snapshot):
     if not _decision_engine_enabled():
         return _run_daily_analysis_legacy(snapshot, context)
     try:
-        def detailed(message):
+        def detailed(message, **kwargs):
             return send_message_detailed(
                 message,
+                **kwargs,
                 system_instruction="Responda exclusivamente em JSON válido, em português do Brasil, conforme o schema solicitado. Não invente dados e não produza narrativa.",
             )
         structured = DecisionEngine(detailed, configured_model_name()).run(snapshot, context)
@@ -626,6 +627,7 @@ def render_operational_supervisor(symbol: str) -> None:
         cols[1].caption(f"Feed: {collector.get('feed_liveness_status') or '—'}")
         cols[2].caption(f"Clock: {collector.get('clock_alignment_status') or '—'}")
         cols[3].caption(f"Lease: {'ATIVO' if snapshot['lease']['active'] else 'INATIVO'}")
+        st.caption(f"Lease IA: {'ATIVO' if snapshot.get('ai_worker', {}).get('active') else 'INATIVO'}")
         cols = st.columns(4)
         cols[0].caption(f"Último M1: {snapshot['latest_m1'].get('timestamp_utc') or '—'}")
         cols[1].caption(f"MarketState: {latest.get('cutoff_at_utc') or '—'}")
@@ -638,6 +640,21 @@ def render_operational_supervisor(symbol: str) -> None:
         if latest_shadow.get("error_type"):
             shadow_detail += f" · erro: {latest_shadow['error_type']}"
         st.caption(f"Shadow: {shadow_state}{shadow_detail} · Auto Decision: {'ON' if security['AUTO_DECISION_ENGINE'] else 'OFF'}")
+        official = snapshot.get("official_analysis", {}).get("latest") or {}
+        if security["AUTO_DECISION_ENGINE"]:
+            if official:
+                st.markdown(
+                    f"**Última análise oficial:** {official.get('cutoff_at_utc') or '—'} · "
+                    f"Modelo: `{official.get('model_used') or official.get('model_configured') or '—'}` · "
+                    f"Gate: `{official.get('gate_status') or '—'}` · "
+                    f"Consenso: `{official.get('consensus_status') or '—'}` · "
+                    f"Confiança: `{official.get('confidence') or '—'}` · "
+                    f"Contexto: `{official.get('context_operational') or '—'}`"
+                )
+                if official.get("narrative"):
+                    st.markdown(official["narrative"])
+            else:
+                st.caption("Análise oficial automática: aguardando o primeiro MarketState.")
         ai_text = _supervisor_ai_text(snapshot)
         if ai_text:
             st.info(ai_text)

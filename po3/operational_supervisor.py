@@ -162,9 +162,16 @@ def build_supervisor_snapshot(db_path: str, symbol: str, now_utc: datetime | Non
             counts[table] = int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
         runtime = conn.execute("SELECT * FROM collector_runtime_status WHERE symbol=?", (symbol,)).fetchone()
         lease = conn.execute("SELECT * FROM collector_leases WHERE collector_name='po3-m1' AND symbol=?", (symbol,)).fetchone()
+        ai_lease = conn.execute("SELECT * FROM collector_leases WHERE collector_name='po3-ai' AND symbol=?", (symbol,)).fetchone()
         latest_m1 = conn.execute("SELECT MAX(timestamp_utc) FROM market_bars_m1 WHERE symbol=?", (symbol,)).fetchone()[0]
         latest_state = conn.execute("SELECT * FROM market_states WHERE symbol=? ORDER BY cutoff_at_utc DESC,id DESC LIMIT 1", (symbol,)).fetchone()
         latest_shadow = conn.execute("SELECT id,market_state_id,cutoff_at_utc,status,model_configured,model_used,error_type,error_message,created_at_utc FROM shadow_runs WHERE symbol=? ORDER BY cutoff_at_utc DESC,id DESC LIMIT 1", (symbol,)).fetchone()
+        try:
+            latest_official = conn.execute("SELECT id,market_state_id,cutoff_at_utc,status,model_configured,model_used,gate_status,consensus_status,confidence,context_operational,narrative,error_type,error_message,created_at_utc FROM official_decision_runs WHERE symbol=? ORDER BY cutoff_at_utc DESC,id DESC LIMIT 1", (symbol,)).fetchone()
+        except sqlite3.OperationalError:
+            # A UI aberta durante a primeira migração ainda consegue mostrar
+            # o Supervisor; o worker criará a tabela de forma idempotente.
+            latest_official = None
         outcome_rows = conn.execute("SELECT horizon_code,status,COUNT(*) n FROM observed_outcomes WHERE symbol=? GROUP BY horizon_code,status", (symbol,)).fetchall()
         outcomes = {"total": sum(int(row["n"]) for row in outcome_rows), "por_horizon": {}, "por_status": {}}
         for row in outcome_rows:
@@ -185,18 +192,25 @@ def build_supervisor_snapshot(db_path: str, symbol: str, now_utc: datetime | Non
         runtime_data = dict(runtime) if runtime else {}
         lease_data = dict(lease) if lease else {}
         lease_active = bool(lease and _utc(lease["expires_at"]) and _utc(lease["expires_at"]) > now)
+        ai_lease_active = bool(ai_lease and _utc(ai_lease["expires_at"]) and _utc(ai_lease["expires_at"]) > now)
         security = {key: flags().get(key, False) for key in ("AUTO_DECISION_ENGINE", "SHADOW_MODE_ENABLED", "REPLAY_ENABLED", "CALIBRATION_ENABLED", "MODEL_BENCHMARK_ENABLED")}
         o1 = _validate_o1(conn, symbol, now)
     finally:
         conn.close()
     shadow_data = dict(latest_shadow) if latest_shadow else None
-    dangerous = security["AUTO_DECISION_ENGINE"]
-    if dangerous:
-        overall = "ATENCAO_SEGURANCA"
-    elif integrity != "ok":
+    official_data = dict(latest_official) if latest_official else None
+    auto_attention = False
+    if security["AUTO_DECISION_ENGINE"]:
+        if official_data and official_data.get("status") == "ERRO":
+            auto_attention = True
+        elif latest and (not official_data or _utc(official_data.get("cutoff_at_utc")) < _utc(latest.get("cutoff_at_utc"))):
+            auto_attention = True
+    if integrity != "ok":
         overall = "ATENCAO_BANCO"
     elif security["SHADOW_MODE_ENABLED"] and shadow_data and shadow_data.get("status") == "ERRO":
         overall = "ATENCAO_SHADOW"
+    elif auto_attention:
+        overall = "ATENCAO_AUTO_DECISION"
     elif not active:
         overall = "AGUARDANDO_SESSAO"
     elif runtime_data.get("clock_alignment_status") not in SAFE_CLOCK_STATUSES:
@@ -215,9 +229,12 @@ def build_supervisor_snapshot(db_path: str, symbol: str, now_utc: datetime | Non
         "session": {"market_active": active, "local_time": local, "session_status": "ABERTA" if active else "FECHADA"},
         "collector": {key: runtime_data.get(key) for key in ("status", "feed_liveness_status", "clock_alignment_status", "detected_offset_seconds", "normalized_tick_at_utc", "last_closed_at_utc", "feed_lag_seconds")},
         "lease": {"active": lease_active, "owner_id": lease_data.get("owner_id"), "expires_at": lease_data.get("expires_at")},
+        "ai_worker": {"active": ai_lease_active, "owner_id": ai_lease["owner_id"] if ai_lease else None, "expires_at": ai_lease["expires_at"] if ai_lease else None},
         "database": {"integrity_status": integrity, **counts},
         "latest_m1": {"timestamp_utc": latest_m1}, "latest_market_state": latest,
-        "outcomes": outcomes, "shadow": {"enabled": security["SHADOW_MODE_ENABLED"], "latest": shadow_data},
+        "outcomes": outcomes,
+        "shadow": {"enabled": security["SHADOW_MODE_ENABLED"], "latest": shadow_data},
+        "official_analysis": {"enabled": security["AUTO_DECISION_ENGINE"], "latest": official_data},
         "security": security, "o1_validation": o1, "overall_status": overall,
     }
     return snapshot

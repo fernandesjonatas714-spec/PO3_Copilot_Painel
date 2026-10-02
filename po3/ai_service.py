@@ -66,13 +66,22 @@ def _error_from_http(exc: HTTPError) -> OpenRouterError:
     except Exception: pass
     return OpenRouterError(message)
 
-def send_message_detailed(message: str, *, config: OpenRouterConfig | None = None, system_instruction: str | None = None) -> dict:
+def send_message_detailed(message: str, *, config: OpenRouterConfig | None = None,
+                          system_instruction: str | None = None,
+                          model_override: str | None = None,
+                          allow_model_fallback: bool = True) -> dict:
     """Retorna conteúdo e metadados seguros, incluindo o modelo que respondeu."""
     if not isinstance(message, str) or not message.strip(): raise OpenRouterError("A mensagem para a IA não pode estar vazia.")
-    config=config or load_config(); messages=[]
+    config=config or load_config()
+    effective_model = (model_override or config.model).strip()
+    if not effective_model.endswith(":free"):
+        raise OpenRouterError("O PO3 Copilot aceita somente modelos gratuitos do OpenRouter.")
+    messages=[]
     if system_instruction and system_instruction.strip(): messages.append({"role":"system","content":system_instruction.strip()})
     messages.append({"role":"user","content":message})
-    ordered=[config.model]+[x for x in FREE_MODEL_PRIORITY if x != config.model]
+    ordered=[effective_model]
+    if allow_model_fallback:
+        ordered += [x for x in FREE_MODEL_PRIORITY if x != effective_model]
     last_error=None; started=time.monotonic(); attempts=[]; context=ssl.create_default_context()
     for start in range(0,len(ordered),4):
         batch=ordered[start:start+4]; attempts.extend(batch)
@@ -83,7 +92,7 @@ def send_message_detailed(message: str, *, config: OpenRouterConfig | None = Non
             raw=candidate.get("choices",[{}])[0].get("message",{}).get("content")
             if isinstance(raw,list): raw="".join(str(x.get("text","")) for x in raw if isinstance(x,dict))
             if not isinstance(raw,str) or not raw.strip(): last_error=OpenRouterError(f"O modelo {batch[0]} retornou uma mensagem vazia."); continue
-            used=str(candidate.get("model") or batch[0]); return {"content":raw.strip(),"model_configured":config.model,"model_used":used,"fallback_used":used!=config.model,"duration_seconds":round(time.monotonic()-started,3),"attempts":attempts}
+            used=str(candidate.get("model") or batch[0]); return {"content":raw.strip(),"model_configured":config.model,"model_used":used,"fallback_used":used!=config.model,"duration_seconds":round(time.monotonic()-started,3),"attempts":attempts,"model_attempts":list(attempts)}
         except HTTPError as exc: last_error=_error_from_http(exc)
         except (TimeoutError,socket.timeout): last_error=OpenRouterError("Tempo limite excedido ao conectar ao OpenRouter.")
         except URLError as exc: last_error=OpenRouterError(f"Falha de conexão com o OpenRouter: {exc.reason}")

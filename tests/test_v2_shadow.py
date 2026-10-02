@@ -81,6 +81,49 @@ class ShadowModeTests(unittest.TestCase):
         with sqlite3.connect(self.path) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM shadow_runs").fetchone()[0], 1)
 
+    def test_orphan_running_shadow_is_recovered_in_same_row(self):
+        shadow.SHADOW_MODE_ENABLED = True
+        state_id = self.add_state()
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("""INSERT INTO shadow_runs
+                (market_state_id,symbol,cutoff_at_utc,state_hash,shadow_mode_version,
+                 decision_engine_version,prompt_version,schema_version,model_configured,
+                 decisions_json,status,created_at_utc,worker_owner_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (state_id, "WIN", "2026-01-01T10:00:00Z", "hash", shadow.SHADOW_MODE_VERSION,
+                 "1.1.0", "1.1.0", "2.0.0", "modelo-fake", "[]", "RUNNING",
+                 "2020-01-01T00:00:00+00:00", "worker-antigo"))
+            run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        result = run_shadow_for_market_state(self.path, state_id, lambda payload: self.runner_result(), model_configured="modelo-fake")
+        with sqlite3.connect(self.path) as conn:
+            row = conn.execute("SELECT id,status,recovered_after_restart FROM shadow_runs").fetchone()
+            count = conn.execute("SELECT COUNT(*) FROM shadow_runs").fetchone()[0]
+        self.assertEqual(result["created"], True)
+        self.assertEqual(row, (run_id, "OK", 1))
+        self.assertEqual(count, 1)
+
+    def test_recent_running_shadow_with_active_owner_is_not_stolen(self):
+        shadow.SHADOW_MODE_ENABLED = True
+        state_id = self.add_state()
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("""INSERT INTO shadow_runs
+                (market_state_id,symbol,cutoff_at_utc,state_hash,shadow_mode_version,
+                 decision_engine_version,prompt_version,schema_version,model_configured,
+                 decisions_json,status,created_at_utc,worker_owner_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (state_id, "WIN", "2026-01-01T10:00:00Z", "hash", shadow.SHADOW_MODE_VERSION,
+                 "1.1.0", "1.1.0", "2.0.0", "modelo-fake", "[]", "RUNNING",
+                 "2026-01-01T10:00:00+00:00", "worker-ativo"))
+            conn.execute("INSERT INTO collector_leases VALUES (?,?,?,?,?,?,?)",
+                         ("po3-ai", "WIN", "worker-ativo", 1, "2026-01-01T10:00:00+00:00",
+                          "2026-01-01T10:01:00+00:00", "2999-01-01T00:00:00+00:00"))
+        calls = []
+        result = run_shadow_for_market_state(self.path, state_id,
+                                              lambda payload: calls.append(payload) or self.runner_result(),
+                                              model_configured="modelo-fake")
+        self.assertFalse(result["created"])
+        self.assertFalse(calls)
+
     def test_error_does_not_block_next_state(self):
         shadow.SHADOW_MODE_ENABLED = True
         first, second = self.add_state(cutoff="2026-01-01T10:00:00Z"), self.add_state(cutoff="2026-01-01T10:05:00Z")

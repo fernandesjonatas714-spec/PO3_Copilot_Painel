@@ -120,6 +120,25 @@ class DecisionEngineAcceptanceTests(unittest.TestCase):
         state=build_market_state(old,self.context)
         self.assertEqual(apply_gate(validate_market_state(state),[]).status,"BLOQUEADO")
 
+    def test_calendar_unavailable_blocks_before_any_llm_call(self):
+        state = build_market_state(self.snapshot, {"calendar": {"available": False}, "news": {}})
+        calls = []
+        result = DecisionEngine(lambda message: calls.append(message), "qwen/qwen3.8-27b:free").run_market_state(state)
+        self.assertEqual(calls, [])
+        self.assertEqual(result.error, "DADOS_CRITICOS_AUSENTES")
+        self.assertEqual(result.gate.status, "BLOQUEADO")
+        self.assertEqual(result.decisions, [])
+        self.assertEqual(result.consensus["status"], "NAO_EXECUTADA")
+
+    def test_risk_event_score_ten_is_informational_with_valid_data(self):
+        items = self.items(confidence="ALTA", status="COMPLETAS")
+        items[3]["decisao"] = "10"
+        result = DecisionEngine(lambda message: self.response(items), "qwen/qwen3.8-27b:free").run(
+            self.snapshot, self.context
+        )
+        self.assertEqual(len(result.decisions), 6)
+        self.assertNotEqual(result.gate.status, "BLOQUEADO")
+
     def test_sem_setup_is_not_blocked_gate(self):
         items=self.items(confidence="ALTA",status="COMPLETAS"); items[-1]["decisao"]="SEM_SETUP"
         result=DecisionEngine(lambda m:self.response(items),"qwen/qwen3.8-27b:free").run(self.snapshot,self.context)

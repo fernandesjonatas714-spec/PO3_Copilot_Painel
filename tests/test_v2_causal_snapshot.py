@@ -173,7 +173,7 @@ class CausalSnapshotTests(unittest.TestCase):
         text = cmd.read_text(encoding="utf-8")
         self.assertIn("findstr /b \"MT5_TERMINAL_PATH=\"", text)
         self.assertIn("set \"AUTO_DATA_COLLECTION=true\"", text)
-        self.assertIn("set \"AUTO_DECISION_ENGINE=false\"", text)
+        self.assertIn("set \"AUTO_DECISION_ENGINE=true\"", text)
 
 
 if __name__ == "__main__": unittest.main()
