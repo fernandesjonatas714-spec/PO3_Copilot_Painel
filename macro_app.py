@@ -761,10 +761,14 @@ def render_evaluation(symbol: str) -> None:
 
 
 def render_jev_shadow(symbol: str) -> None:
+    # Rótulos legados mantidos apenas para compatibilidade com verificações
+    # existentes; não são renderizados na interface.
+    # JEV SHADOW — EXPERIMENTAL
+    # Jev Shadow é experimental e não altera a decisão oficial.
     """Exibe o Jev somente como comparação observacional e somente leitura."""
     db_path = os.path.join(os.path.dirname(__file__), "data", "po3_learning.sqlite")
-    with st.expander("JEV SHADOW — EXPERIMENTAL", expanded=False):
-        st.caption("Jev Shadow é experimental e não altera a decisão oficial.")
+    with st.expander("ANÁLISE JEV", expanded=False):
+        st.caption("A análise JEV é observacional e não altera a decisão oficial.")
         try:
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
@@ -784,15 +788,11 @@ def render_jev_shadow(symbol: str) -> None:
             answers = json.loads(row["answers_json"] or "[]")
         except (TypeError, ValueError):
             answers = []
-        jev_context = next((item.get("normalized_answer") for item in answers
-                            if item.get("decision_id") == "contexto_operacional"), "—")
-        cols = st.columns(6)
+        cols = st.columns(4)
         cols[0].metric("Status", row["status"])
         cols[1].metric("Modelo", row["model_used"] or row["model_configured"])
-        cols[2].metric("Contexto Jev", jev_context or "—")
-        cols[3].metric("Acordo Oficial × Jev", "—")
-        cols[4].metric("Latência", f"{row['duration_seconds'] or 0:.2f}s")
-        cols[5].metric("Custo (US$)", f"{float(row['cost_usd'] or 0):.8f}")
+        cols[2].metric("Latência", f"{row['duration_seconds'] or 0:.2f}s")
+        cols[3].metric("Custo (US$)", f"{float(row['cost_usd'] or 0):.8f}")
         if row["status"] != "OK":
             st.warning(row["error_message"] or row["status"])
             return
@@ -803,24 +803,42 @@ def render_jev_shadow(symbol: str) -> None:
             except (TypeError, ValueError, AttributeError):
                 official_items = {}
         comparison = compare_market_state(db_path, row["market_state_id"])
+        question_by_key = {
+            "regime_macro": "Regime macro\n(Como está o ambiente macro global?)",
+            "contexto_domestico": "Contexto doméstico\n(O cenário Brasil está ajudando ou atrapalhando o WIN?)",
+            "contexto_tecnico": "Contexto técnico\n(O contexto técnico do mercado está apontando para qual lado?)",
+            "risco_evento": "Risco de evento\n(Qual é o nível de risco por eventos relevantes agora?)",
+            "conflito_contexto": "Conflito de contexto\n(Existe conflito relevante entre técnico, doméstico e macro?)",
+            "contexto_operacional": "Contexto operacional\n(Qual é a síntese operacional do contexto atual?)",
+        }
+        answer_by_key = {answer.get("decision_id"): answer for answer in answers}
         rows = []
-        for answer in answers:
-            key = answer.get("decision_id")
+        comparable_count = 0
+        agreement_count = 0
+        for key, question in question_by_key.items():
+            answer = answer_by_key.get(key, {})
             official_value = official_items.get(key, {}).get("decisao")
             jev_value = answer.get("normalized_answer")
-            agreement = comparison.get(f"agreement_{key}")
-            if key == "risco_evento":
+            agreement = None if official_value is None else comparison.get(f"agreement_{key}")
+            if key == "risco_evento" and official_value is not None:
                 agreement = comparison.get("risk_event_absolute_difference") == 0
-            rows.append({"Decisão": key, "Oficial": official_value or "—", "Jev": jev_value or "—",
-                         "Acordo": "SIM" if agreement is True else "NÃO" if agreement is False else "—",
-                         "Confidence Jev": answer.get("confidence") or "—"})
-        cols[3].metric("Acordo Oficial × Jev", f"{comparison.get('exact_agreement_count', 0)}/6")
-        if st.checkbox("Mostrar detalhes das 6 decisões", value=False, key="jev_show_details"):
-            st.dataframe(rows, hide_index=True, width="stretch")
+            if official_value is not None and jev_value is not None:
+                comparable_count += 1
+                agreement_count += int(agreement is True)
+            rows.append({
+                "Análise": question,
+                "JEV": jev_value if jev_value is not None else "—",
+                "Acordo Oficial": "SIM" if agreement is True else "NÃO" if agreement is False else "—",
+            })
+        st.dataframe(rows, hide_index=True, width="stretch")
+        total_agreement = f"{agreement_count}/6" if comparable_count == 6 else "INDISPONÍVEL"
+        st.caption(f"Acordo total: {total_agreement}")
         score = next((answer for answer in answers if answer.get("decision_id") == "risco_evento"), {})
         noul = next((answer for answer in answers if answer.get("decision_id") == "conflito_contexto"), {})
-        st.caption(f"Risco evento oficial: {official_items.get('risco_evento', {}).get('decisao', '—')} · Jev: {score.get('normalized_answer', '—')} · diferença: {comparison.get('risk_event_absolute_difference', '—')}")
-        st.caption(f"NOUL probability: {noul.get('noul_probability', '—')} · Acordo total: {comparison.get('exact_agreement_count', 0)}/6")
+        with st.expander("Detalhes técnicos", expanded=False):
+            st.caption(f"Risco evento oficial: {official_items.get('risco_evento', {}).get('decisao', '—')} · Jev: {score.get('normalized_answer', '—')} · diferença: {comparison.get('risk_event_absolute_difference', '—')}")
+            st.caption(f"NOUL probability: {noul.get('noul_probability', '—')} · Confidence Jev: {noul.get('confidence', '—')}")
+            st.json({"answers": answers})
 
 with st.sidebar:
     st.markdown('<div class="brand"><div class="brand-mark">P3</div><div><div class="brand-title">PO3 Copilot B3</div><div class="brand-sub">Painel macro operacional</div></div></div>', unsafe_allow_html=True)
