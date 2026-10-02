@@ -112,6 +112,34 @@ def migrate(db_path: str | Path) -> str:
           UNIQUE(market_state_id, shadow_mode_version, decision_engine_version, prompt_version, model_configured)
         );
         CREATE INDEX IF NOT EXISTS idx_shadow_runs_market_state ON shadow_runs(market_state_id);
+        CREATE TABLE IF NOT EXISTS jev_shadow_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          market_state_id INTEGER NOT NULL,
+          symbol TEXT NOT NULL,
+          cutoff_at_utc TEXT NOT NULL,
+          state_hash TEXT NOT NULL,
+          jev_engine_version TEXT NOT NULL,
+          jev_question_version TEXT NOT NULL,
+          model_configured TEXT NOT NULL,
+          model_used TEXT,
+          provider TEXT,
+          status TEXT NOT NULL,
+          external_call_performed INTEGER NOT NULL DEFAULT 0,
+          answers_json TEXT NOT NULL DEFAULT '[]',
+          raw_response_json TEXT,
+          input_tokens INTEGER,
+          output_tokens INTEGER,
+          cost_usd REAL NOT NULL DEFAULT 0,
+          duration_seconds REAL,
+          worker_owner_id TEXT,
+          recovered_after_restart INTEGER NOT NULL DEFAULT 0,
+          error_type TEXT,
+          error_message TEXT,
+          created_at_utc TEXT NOT NULL,
+          finished_at_utc TEXT,
+          UNIQUE(market_state_id, model_configured, jev_question_version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_jev_shadow_runs_state ON jev_shadow_runs(market_state_id);
         CREATE TABLE IF NOT EXISTS official_decision_runs (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           market_state_id INTEGER NOT NULL,

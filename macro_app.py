@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 import json
 import os
+import sqlite3
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -15,7 +16,8 @@ from po3.decision_engine import DecisionEngine
 from po3.decision_engine.narrative import generate_narrative
 from po3.learning_store import record_ai_error, recent_analyses, save_analysis
 from po3.analytics import build_evaluation_report
-from po3.v2_config import EVALUATION_ENGINE_ENABLED, SUPERVISOR_AI_ENABLED
+from po3.v2_config import EVALUATION_ENGINE_ENABLED, JEV_SHADOW_ENABLED, SUPERVISOR_AI_ENABLED
+from po3.jev_comparison import compare_market_state
 from po3.operational_supervisor import build_supervisor_snapshot, supervisor_ai_context, supervisor_ai_gate
 
 DEFAULT_TERMINAL = r"C:\Program Files\Clear Investimentos MT5 Terminal\terminal64.exe"
@@ -699,6 +701,65 @@ def render_evaluation(symbol: str) -> None:
         with st.expander("Qualidade dos dados", expanded=False):
             st.json(quality)
 
+
+def render_jev_shadow(symbol: str) -> None:
+    """Exibe o Jev somente como comparação observacional e somente leitura."""
+    db_path = os.path.join(os.path.dirname(__file__), "data", "po3_learning.sqlite")
+    with st.expander("JEV SHADOW — EXPERIMENTAL", expanded=False):
+        st.caption("Jev Shadow é experimental e não altera a decisão oficial.")
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM jev_shadow_runs WHERE symbol=? ORDER BY cutoff_at_utc DESC,id DESC LIMIT 1", (symbol,)).fetchone()
+            official = conn.execute("SELECT * FROM official_decision_runs WHERE symbol=? ORDER BY cutoff_at_utc DESC,id DESC LIMIT 1", (symbol,)).fetchone()
+            conn.close()
+        except Exception as exc:
+            st.warning(f"Jev Shadow indisponível: {type(exc).__name__}")
+            return
+        if not JEV_SHADOW_ENABLED:
+            st.info("Desativado — JEV_SHADOW_ENABLED=false")
+            return
+        if row is None:
+            st.info("Aguardando o primeiro MarketState elegível.")
+            return
+        cols = st.columns(6)
+        cols[0].metric("Status", row["status"])
+        cols[1].metric("Modelo", row["model_used"] or row["model_configured"])
+        cols[2].metric("MarketState", row["market_state_id"])
+        cols[3].metric("Latência", f"{row['duration_seconds'] or 0:.2f}s")
+        cols[4].metric("Input tokens", row["input_tokens"] or 0)
+        cols[5].metric("Custo (US$)", f"{float(row['cost_usd'] or 0):.8f}")
+        if row["status"] != "OK":
+            st.warning(row["error_message"] or row["status"])
+            return
+        try:
+            answers = json.loads(row["answers_json"] or "[]")
+        except (TypeError, ValueError):
+            answers = []
+        official_items = {}
+        if official is not None:
+            try:
+                official_items = {item.get("id_decisao"): item for item in json.loads(official["decisions_json"]).get("decisoes", [])}
+            except (TypeError, ValueError, AttributeError):
+                official_items = {}
+        comparison = compare_market_state(db_path, row["market_state_id"])
+        rows = []
+        for answer in answers:
+            key = answer.get("decision_id")
+            official_value = official_items.get(key, {}).get("decisao")
+            jev_value = answer.get("normalized_answer")
+            agreement = comparison.get(f"agreement_{key}")
+            if key == "risco_evento":
+                agreement = comparison.get("risk_event_absolute_difference") == 0
+            rows.append({"Decisão": key, "Oficial": official_value or "—", "Jev": jev_value or "—",
+                         "Acordo": "SIM" if agreement is True else "NÃO" if agreement is False else "—",
+                         "Confidence Jev": answer.get("confidence") or "—"})
+        st.dataframe(rows, hide_index=True, width="stretch")
+        score = next((answer for answer in answers if answer.get("decision_id") == "risco_evento"), {})
+        noul = next((answer for answer in answers if answer.get("decision_id") == "conflito_contexto"), {})
+        st.caption(f"Risco evento oficial: {official_items.get('risco_evento', {}).get('decisao', '—')} · Jev: {score.get('normalized_answer', '—')} · diferença: {comparison.get('risk_event_absolute_difference', '—')}")
+        st.caption(f"NOUL probability: {noul.get('noul_probability', '—')} · Acordo total: {comparison.get('exact_agreement_count', 0)}/6")
+
 with st.sidebar:
     st.markdown('<div class="brand"><div class="brand-mark">P3</div><div><div class="brand-title">PO3 Copilot B3</div><div class="brand-sub">Painel macro operacional</div></div></div>', unsafe_allow_html=True)
     st.markdown("**Configuração de leitura**")
@@ -725,6 +786,7 @@ def supervisor_live():
 
 supervisor_live()
 live()
+render_jev_shadow(symbol)
 if "latest_snapshot" in st.session_state:
     render_collection_status(symbol)
     render_evaluation(symbol)
