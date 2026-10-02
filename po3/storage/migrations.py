@@ -172,6 +172,13 @@ def migrate(db_path: str | Path) -> str:
         for column, definition in (("model_attempts_json", "TEXT NOT NULL DEFAULT '[]'"), ("decision_model_used", "TEXT"), ("decision_model_attempts_json", "TEXT NOT NULL DEFAULT '[]'"), ("decision_fallback_used", "INTEGER NOT NULL DEFAULT 0"), ("decision_repair_used", "INTEGER NOT NULL DEFAULT 0"), ("narrative_model_used", "TEXT"), ("narrative_fallback_used", "INTEGER NOT NULL DEFAULT 0"), ("decision_status", "TEXT"), ("narrative_status", "TEXT")):
             if column not in official_columns:
                 conn.execute(f"ALTER TABLE official_decision_runs ADD COLUMN {column} {definition}")
+        for column, definition in (("worker_owner_id", "TEXT"), ("recovered_after_restart", "INTEGER NOT NULL DEFAULT 0")):
+            if column not in official_columns:
+                conn.execute(f"ALTER TABLE official_decision_runs ADD COLUMN {column} {definition}")
+        shadow_columns = {row[1] for row in conn.execute("PRAGMA table_info(shadow_runs)")}
+        for column, definition in (("worker_owner_id", "TEXT"), ("recovered_after_restart", "INTEGER NOT NULL DEFAULT 0")):
+            if column not in shadow_columns:
+                conn.execute(f"ALTER TABLE shadow_runs ADD COLUMN {column} {definition}")
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(?,?)",
                      (CURRENT_SCHEMA_VERSION, datetime.now(timezone.utc).isoformat()))
     return CURRENT_SCHEMA_VERSION

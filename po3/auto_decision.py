@@ -19,6 +19,7 @@ from po3.decision_engine.engine import DecisionEngine
 from po3.decision_engine.narrative import generate_narrative
 from po3.decision_engine.schemas import DECISION_ENGINE_VERSION, PROMPT_VERSION, SCHEMA_VERSION
 from po3.shadow_runner import _hydrate_market_state
+from po3.run_recovery import ORPHAN_RUN_STALE_SECONDS, run_is_recoverable
 from po3.storage.migrations import migrate
 
 
@@ -105,6 +106,8 @@ def run_auto_decision_for_market_state(
     model_configured: str | None = None,
     decision_engine_version: str = DECISION_ENGINE_VERSION,
     prompt_version: str = PROMPT_VERSION,
+    worker_owner_id: str | None = None,
+    stale_timeout_seconds: int = ORPHAN_RUN_STALE_SECONDS,
 ) -> dict[str, Any]:
     """Executa no máximo uma análise oficial por estado/configuração."""
     path = Path(db_path)
@@ -118,23 +121,47 @@ def run_auto_decision_for_market_state(
         row = conn.execute("SELECT * FROM market_states WHERE id=?", (market_state_id,)).fetchone()
         if row is None:
             return {"status": "ERRO", "error_type": "MARKETSTATE_NAO_ENCONTRADO", "created": False}
-        claim = conn.execute(
+        existing = conn.execute(
+            """SELECT * FROM official_decision_runs WHERE market_state_id=?
+               AND decision_engine_version=? AND prompt_version=? AND model_configured=?""",
+            (market_state_id, decision_engine_version, prompt_version, model),
+        ).fetchone()
+        recovered = False
+        if existing is not None:
+            if not run_is_recoverable(path, existing, status="PROCESSANDO",
+                                      worker_owner_id=worker_owner_id,
+                                      stale_timeout_seconds=stale_timeout_seconds):
+                return {"status": existing["status"], "created": False,
+                        "id": int(existing["id"])}
+            conn.execute(
+                """UPDATE official_decision_runs
+                   SET status='PROCESSANDO', error_type=NULL, error_message=NULL,
+                       worker_owner_id=?, recovered_after_restart=1
+                   WHERE id=?""",
+                (worker_owner_id, existing["id"]),
+            )
+            run_id = int(existing["id"])
+            recovered = True
+        else:
+            claim = conn.execute(
             """INSERT OR IGNORE INTO official_decision_runs
                (market_state_id,symbol,cutoff_at_utc,state_hash,decision_engine_version,
-                prompt_version,schema_version,model_configured,decisions_json,status,created_at_utc)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                prompt_version,schema_version,model_configured,decisions_json,status,created_at_utc,
+                worker_owner_id,recovered_after_restart)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (row["id"], row["symbol"], row["cutoff_at_utc"], row["state_hash"],
-             decision_engine_version, prompt_version, SCHEMA_VERSION, model, "{}", "PROCESSANDO", _utc_now()),
-        )
-        if claim.rowcount == 0:
-            existing = conn.execute(
-                """SELECT * FROM official_decision_runs WHERE market_state_id=?
-                   AND decision_engine_version=? AND prompt_version=? AND model_configured=?""",
-                (market_state_id, decision_engine_version, prompt_version, model),
-            ).fetchone()
-            return {"status": existing["status"] if existing else "PROCESSANDO", "created": False,
-                    "id": int(existing["id"]) if existing else None}
-        run_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+             decision_engine_version, prompt_version, SCHEMA_VERSION, model, "{}", "PROCESSANDO", _utc_now(),
+             worker_owner_id, 0),
+            )
+            if claim.rowcount == 0:
+                existing = conn.execute(
+                    """SELECT * FROM official_decision_runs WHERE market_state_id=?
+                       AND decision_engine_version=? AND prompt_version=? AND model_configured=?""",
+                    (market_state_id, decision_engine_version, prompt_version, model),
+                ).fetchone()
+                return {"status": existing["status"] if existing else "PROCESSANDO", "created": False,
+                        "id": int(existing["id"]) if existing else None}
+            run_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
     finally:
         conn.close()
 
@@ -173,7 +200,7 @@ def run_auto_decision_for_market_state(
             conn.commit()
         finally:
             conn.close()
-        return {"status": status, "created": True, "id": run_id, "result": result, "narrative": narrative}
+        return {"status": status, "created": True, "recovered": recovered, "id": run_id, "result": result, "narrative": narrative}
     except Exception as exc:
         conn = sqlite3.connect(path)
         try:
@@ -185,7 +212,7 @@ def run_auto_decision_for_market_state(
             conn.commit()
         finally:
             conn.close()
-        return {"status": "ERRO", "created": True, "id": run_id,
+        return {"status": "ERRO", "created": True, "recovered": recovered, "id": run_id,
                 "error_type": type(exc).__name__, "error_message": str(exc)}
 
 
@@ -195,6 +222,8 @@ def process_pending_auto_decisions(
     model_configured: str | None = None,
     symbol: str | None = None,
     limit: int = 1,
+    worker_owner_id: str | None = None,
+    stale_timeout_seconds: int = ORPHAN_RUN_STALE_SECONDS,
 ) -> dict[str, Any]:
     """Processa somente estados ainda não analisados pela configuração atual."""
     path = Path(db_path)
@@ -203,7 +232,7 @@ def process_pending_auto_decisions(
     conn = sqlite3.connect(path)
     try:
         conn.row_factory = sqlite3.Row
-        where = ["o.id IS NULL"]
+        where = ["(o.id IS NULL OR o.status='PROCESSANDO')"]
         args: list[Any] = [DECISION_ENGINE_VERSION, PROMPT_VERSION, model]
         if symbol:
             where.append("s.symbol=?")
@@ -219,8 +248,25 @@ def process_pending_auto_decisions(
         ).fetchall()
     finally:
         conn.close()
-    results = [run_auto_decision_for_market_state(path, int(row["id"]), model_configured=model) for row in rows]
-    return {"selected": len(rows), "created": sum(1 for item in results if item.get("created")), "results": results}
+    eligible: list[int] = []
+    for row in rows:
+        if len(eligible) >= max(1, int(limit)):
+            break
+        with sqlite3.connect(path) as check_conn:
+            check_conn.row_factory = sqlite3.Row
+            existing = check_conn.execute(
+                """SELECT * FROM official_decision_runs WHERE market_state_id=?
+                   AND decision_engine_version=? AND prompt_version=? AND model_configured=?""",
+                (row["id"], DECISION_ENGINE_VERSION, PROMPT_VERSION, model),
+            ).fetchone()
+        if existing is None or run_is_recoverable(path, existing, status="PROCESSANDO",
+                                                   worker_owner_id=worker_owner_id,
+                                                   stale_timeout_seconds=stale_timeout_seconds):
+            eligible.append(int(row["id"]))
+    results = [run_auto_decision_for_market_state(path, state_id, model_configured=model,
+                                                   worker_owner_id=worker_owner_id,
+                                                   stale_timeout_seconds=stale_timeout_seconds) for state_id in eligible]
+    return {"selected": len(eligible), "created": sum(1 for item in results if item.get("created")), "results": results}
 
 
 def latest_official_analysis(db_path: str | Path, symbol: str) -> dict[str, Any] | None:

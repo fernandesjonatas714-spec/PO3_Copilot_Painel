@@ -73,7 +73,8 @@ def run_ai_worker(config: AIWorkerConfig, stop_event: Event | None = None, max_c
             if AUTO_DECISION_ENGINE and not lease_lost.is_set() and not stop_event.is_set():
                 try:
                     from po3.auto_decision import process_pending_auto_decisions
-                    process_pending_auto_decisions(config.db_path, symbol=config.symbol, limit=1)
+                    process_pending_auto_decisions(config.db_path, symbol=config.symbol, limit=1,
+                                                   worker_owner_id=owner)
                 except Exception as exc:
                     print(f"AI Auto Decision: {type(exc).__name__}: {exc}", flush=True)
             if SHADOW_MODE_ENABLED and shadow_runner is not None and not lease_lost.is_set() and not stop_event.is_set():
@@ -84,6 +85,7 @@ def run_ai_worker(config: AIWorkerConfig, stop_event: Event | None = None, max_c
                         model_configured=shadow_model or "UNSPECIFIED",
                         decision_engine_version=DECISION_ENGINE_VERSION,
                         prompt_version=PROMPT_VERSION, symbol=config.symbol,
+                        worker_owner_id=owner,
                     )
                 except Exception as exc:
                     print(f"AI Shadow: {type(exc).__name__}: {exc}", flush=True)

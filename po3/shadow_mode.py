@@ -19,6 +19,7 @@ from po3.evaluation_engine import sample_band
 from po3.replay_engine import sanitize_replay_state
 from po3.decision_engine.schemas import DECISION_ENGINE_VERSION, PROMPT_VERSION
 from po3.v2_config import SHADOW_MODE_ENABLED
+from po3.run_recovery import ORPHAN_RUN_STALE_SECONDS, run_is_recoverable
 
 SHADOW_MODE_VERSION = "1.0.0"
 SCHEMA_VERSION = "2.0.0"
@@ -68,7 +69,9 @@ def _state_row(db_path: str | Path, market_state_id: int) -> dict | None:
 
 def run_shadow_for_market_state(db_path: str | Path, market_state_id: int, decision_runner: Callable[[dict], Any], *,
                                 model_configured: str = "UNSPECIFIED", shadow_mode_version: str = SHADOW_MODE_VERSION,
-                                decision_engine_version: str | None = None, prompt_version: str | None = None) -> dict:
+                                decision_engine_version: str | None = None, prompt_version: str | None = None,
+                                worker_owner_id: str | None = None,
+                                stale_timeout_seconds: int = ORPHAN_RUN_STALE_SECONDS) -> dict:
     """Executa uma vez por configuração; flag desligada não chama runner nem grava."""
     if not SHADOW_MODE_ENABLED:
         return {"status": "DESABILITADO", "created": False, "runner_called": False}
@@ -79,18 +82,31 @@ def run_shadow_for_market_state(db_path: str | Path, market_state_id: int, decis
     prompt = prompt_version or PROMPT_VERSION
     now = datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
         conn.execute("BEGIN IMMEDIATE")
-        existing = conn.execute("SELECT id,status FROM shadow_runs WHERE market_state_id=? AND shadow_mode_version=? AND decision_engine_version=? AND prompt_version=? AND model_configured=?",
+        existing = conn.execute("SELECT * FROM shadow_runs WHERE market_state_id=? AND shadow_mode_version=? AND decision_engine_version=? AND prompt_version=? AND model_configured=?",
                                 (market_state_id, shadow_mode_version, engine_version, prompt, model_configured)).fetchone()
         if existing is not None:
-            conn.commit()
-            return {"status": existing[1], "created": False, "runner_called": False, "shadow_run_id": existing[0], "reason": "IDEMPOTENTE"}
-        cursor = conn.execute("""INSERT INTO shadow_runs
+            if not run_is_recoverable(db_path, existing, status="RUNNING",
+                                      worker_owner_id=worker_owner_id,
+                                      stale_timeout_seconds=stale_timeout_seconds):
+                conn.commit()
+                return {"status": existing["status"], "created": False, "runner_called": False,
+                        "shadow_run_id": existing["id"], "reason": "IDEMPOTENTE"}
+            conn.execute("""UPDATE shadow_runs SET status='RUNNING', error_type=NULL,
+                           error_message=NULL, worker_owner_id=?, recovered_after_restart=1
+                           WHERE id=?""", (worker_owner_id, existing["id"]))
+            run_id = int(existing["id"])
+            recovered = True
+        else:
+            cursor = conn.execute("""INSERT INTO shadow_runs
             (market_state_id,symbol,cutoff_at_utc,state_hash,shadow_mode_version,decision_engine_version,prompt_version,schema_version,model_configured,decisions_json,status,created_at_utc)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (state["id"], state["symbol"], state["cutoff_at_utc"], state["state_hash"], shadow_mode_version, engine_version, prompt,
              state["schema_version"] or SCHEMA_VERSION, model_configured, "[]", "RUNNING", now))
-        run_id = cursor.lastrowid
+            run_id = cursor.lastrowid
+            conn.execute("UPDATE shadow_runs SET worker_owner_id=? WHERE id=?", (worker_owner_id, run_id))
+            recovered = False
         conn.commit()
     payload = sanitize_replay_state(state["state"])
     started = perf_counter()
@@ -105,18 +121,20 @@ def run_shadow_for_market_state(db_path: str | Path, market_state_id: int, decis
     with sqlite3.connect(db_path) as conn:
         conn.execute("UPDATE shadow_runs SET model_used=?,fallback_used=?,repair_used=?,gate_status=?,consensus_status=?,decisions_json=?,status=?,error_type=?,error_message=?,duration_seconds=? WHERE id=?",
                      (model_used, fallback, repair, gate, consensus, decisions_json, status, error_type, error_message, duration, run_id))
-    return {"status": status, "created": True, "runner_called": True, "shadow_run_id": run_id,
+    return {"status": status, "created": True, "recovered": recovered, "runner_called": True, "shadow_run_id": run_id,
             "market_state_id": market_state_id, "model_used": model_used}
 
 
 def process_pending_shadow_states(db_path: str | Path, decision_runner: Callable[[dict], Any], *, limit: int = 10,
                                   model_configured: str = "UNSPECIFIED", shadow_mode_version: str = SHADOW_MODE_VERSION,
                                   decision_engine_version: str = DECISION_ENGINE_VERSION,
-                                  prompt_version: str = PROMPT_VERSION, symbol: str | None = None) -> dict:
+                                  prompt_version: str = PROMPT_VERSION, symbol: str | None = None,
+                                  worker_owner_id: str | None = None,
+                                  stale_timeout_seconds: int = ORPHAN_RUN_STALE_SECONDS) -> dict:
     if not SHADOW_MODE_ENABLED:
         return {"found": 0, "created": 0, "ignored": 0, "OK": 0, "ERRO": 0, "DESABILITADO": 0}
     with _connect_ro(db_path) as conn:
-        clauses = ["NOT EXISTS (SELECT 1 FROM shadow_runs AS r WHERE r.market_state_id=s.id AND r.shadow_mode_version=? AND r.decision_engine_version=? AND r.prompt_version=? AND r.model_configured=?)"]
+        clauses = ["NOT EXISTS (SELECT 1 FROM shadow_runs AS r WHERE r.market_state_id=s.id AND r.shadow_mode_version=? AND r.decision_engine_version=? AND r.prompt_version=? AND r.model_configured=? AND r.status <> 'RUNNING')"]
         params: list[Any] = [shadow_mode_version, decision_engine_version, prompt_version, model_configured]
         if symbol is not None:
             clauses.append("s.symbol=?")
@@ -127,10 +145,26 @@ def process_pending_shadow_states(db_path: str | Path, decision_runner: Callable
             ORDER BY s.cutoff_at_utc ASC,s.id ASC
             LIMIT ?""", tuple(params + [max(0, int(limit))])).fetchall()
     summary = {"found": len(rows), "created": 0, "ignored": 0, "OK": 0, "ERRO": 0}
+    eligible = []
     for row in rows:
+        with _connect_ro(db_path) as conn:
+            existing = conn.execute(
+                """SELECT * FROM shadow_runs WHERE market_state_id=? AND shadow_mode_version=?
+                   AND decision_engine_version=? AND prompt_version=? AND model_configured=?""",
+                (row["id"], shadow_mode_version, decision_engine_version, prompt_version, model_configured),
+            ).fetchone()
+        if existing is None or run_is_recoverable(db_path, existing, status="RUNNING",
+                                                   worker_owner_id=worker_owner_id,
+                                                   stale_timeout_seconds=stale_timeout_seconds):
+            eligible.append(row)
+        if len(eligible) >= max(0, int(limit)):
+            break
+    for row in eligible:
         result = run_shadow_for_market_state(db_path, row["id"], decision_runner, model_configured=model_configured,
                                               shadow_mode_version=shadow_mode_version,
-                                              decision_engine_version=decision_engine_version, prompt_version=prompt_version)
+                                              decision_engine_version=decision_engine_version, prompt_version=prompt_version,
+                                              worker_owner_id=worker_owner_id,
+                                              stale_timeout_seconds=stale_timeout_seconds)
         if result.get("created"):
             summary["created"] += 1
         else:

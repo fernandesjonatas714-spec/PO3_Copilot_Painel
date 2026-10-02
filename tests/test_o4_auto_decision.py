@@ -117,6 +117,49 @@ class O4AutoDecisionTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(selected_state, ids[62])
 
+    def test_orphan_processing_run_is_recovered_in_same_row(self):
+        state_id = insert_market_state(self._state(), self.path,
+                                       cutoff_at_utc="2026-01-01T10:00:00+00:00", symbol="WINV26")
+        old = "2020-01-01T00:00:00+00:00"
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("""INSERT INTO official_decision_runs
+                (market_state_id,symbol,cutoff_at_utc,state_hash,decision_engine_version,
+                 prompt_version,schema_version,model_configured,decisions_json,status,created_at_utc,
+                 worker_owner_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (state_id, "WINV26", "2026-01-01T10:00:00+00:00", "hash", DECISION_ENGINE_VERSION,
+                 PROMPT_VERSION, "2.0.0", "modelo-free", "{}", "PROCESSANDO", old, "worker-antigo"))
+            run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        result = {"decisoes": [], "gate": {"status": "BLOQUEADO"},
+                  "consenso": {"status": "NAO_EXECUTADA"},
+                  "erro": "DADOS_CRITICOS_AUSENTES"}
+        with patch("po3.auto_decision._runner", return_value=(result, None)), \
+             patch("po3.auto_decision.configured_model_name", return_value="modelo-free"):
+            processed = process_pending_auto_decisions(self.path, symbol="WINV26", limit=1)
+        with sqlite3.connect(self.path) as conn:
+            row = conn.execute("SELECT id,status,recovered_after_restart FROM official_decision_runs").fetchone()
+            count = conn.execute("SELECT COUNT(*) FROM official_decision_runs").fetchone()[0]
+        self.assertEqual(processed["created"], 1)
+        self.assertEqual(row, (run_id, "BLOQUEADO", 1))
+        self.assertEqual(count, 1)
+
+    def test_recent_processing_run_with_active_owner_is_not_stolen(self):
+        state_id = insert_market_state(self._state(), self.path,
+                                       cutoff_at_utc="2026-01-01T10:00:00+00:00", symbol="WINV26")
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("""INSERT INTO official_decision_runs
+                (market_state_id,symbol,cutoff_at_utc,state_hash,decision_engine_version,
+                 prompt_version,schema_version,model_configured,decisions_json,status,created_at_utc,
+                 worker_owner_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (state_id, "WINV26", "2026-01-01T10:00:00+00:00", "hash", DECISION_ENGINE_VERSION,
+                 PROMPT_VERSION, "2.0.0", "modelo-free", "{}", "PROCESSANDO",
+                 "2026-01-01T10:00:00+00:00", "worker-ativo"))
+            conn.execute("INSERT INTO collector_leases VALUES (?,?,?,?,?,?,?)",
+                         ("po3-ai", "WINV26", "worker-ativo", 1, "2026-01-01T10:00:00+00:00",
+                          "2026-01-01T10:01:00+00:00", "2999-01-01T00:00:00+00:00"))
+        with patch("po3.auto_decision.configured_model_name", return_value="modelo-free"):
+            processed = process_pending_auto_decisions(self.path, symbol="WINV26", limit=1)
+        self.assertEqual(processed["selected"], 0)
+
     def test_official_path_does_not_use_outcomes(self):
         source = Path(__file__).parents[1].joinpath("po3", "auto_decision.py").read_text(encoding="utf-8")
         self.assertNotIn("observed_outcomes", source)
