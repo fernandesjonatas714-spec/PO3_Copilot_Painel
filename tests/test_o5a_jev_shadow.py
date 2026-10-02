@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 from po3.jev_questions import JEV_QUESTION_VERSION, build_jev_questions
 from po3.jev_service import JevConfig, JevError, send_jev_decisions
 from po3.jev_comparison import compare_market_state
-from po3.jev_worker import JEV_ENGINE_VERSION, process_pending_jev_states, run_jev_for_market_state
+from po3.jev_worker import JEV_ENGINE_VERSION, _normalize_answers, process_pending_jev_states, run_jev_for_market_state
 from po3.storage.market_repository import insert_market_state
 from po3.storage.migrations import migrate
 
@@ -70,6 +70,31 @@ class O5AJevTests(unittest.TestCase):
         with patch("po3.jev_service.urlopen", return_value=_Response({"answers": []})):
             with self.assertRaisesRegex(JevError, "seis respostas"):
                 send_jev_decisions(self.state(), build_jev_questions(), config=JevConfig("secret"))
+
+    def test_invalid_choice_is_rejected(self):
+        invalid = self.answers(); invalid[0]["answer"] = "COMPRA"
+        with self.assertRaisesRegex(JevError, "CHOICE inválido"):
+            _normalize_answers(invalid)
+
+    def test_score_outside_zero_to_nine_is_rejected(self):
+        for score in (-0.01, 9.01):
+            invalid = self.answers(); invalid[3]["raw_score"] = score
+            with self.assertRaisesRegex(JevError, "0..9"):
+                _normalize_answers(invalid)
+
+    def test_noul_outside_zero_to_one_is_rejected(self):
+        invalid = self.answers(); invalid[4]["noul_probability"] = 1.01
+        with self.assertRaisesRegex(JevError, "0..1"):
+            _normalize_answers(invalid)
+
+    def test_invalid_answer_is_persisted_as_error_never_ok(self):
+        state_id = insert_market_state(self.state(), self.path, cutoff_at_utc="2026-01-01T10:00:00+00:00", symbol="WINV26")
+        invalid = self.answers(); invalid[0]["answer"] = "FORA_DAS_OPCOES"
+        with patch("po3.jev_worker.JEV_SHADOW_ENABLED", True):
+            result = run_jev_for_market_state(self.path, state_id, lambda s, q: {"answers": invalid})
+        self.assertEqual(result["status"], "ERRO")
+        with sqlite3.connect(self.path) as conn:
+            self.assertEqual(conn.execute("SELECT status,error_type FROM jev_shadow_runs").fetchone(), ("ERRO", "INVALID_CHOICE"))
 
     def test_one_call_per_state_and_normalization(self):
         state_id = insert_market_state(self.state(), self.path, cutoff_at_utc="2026-01-01T10:00:00+00:00", symbol="WINV26")
@@ -142,6 +167,13 @@ class O5AJevTests(unittest.TestCase):
     def test_jev_schema_is_migrated(self):
         with sqlite3.connect(self.path) as conn:
             self.assertIsNotNone(conn.execute("SELECT name FROM sqlite_master WHERE name='jev_shadow_runs'").fetchone())
+
+    def test_streamlit_exposes_experimental_jev_section(self):
+        source = Path(__file__).parents[1].joinpath("macro_app.py").read_text(encoding="utf-8")
+        self.assertIn("JEV SHADOW — EXPERIMENTAL", source)
+        self.assertIn("Jev Shadow é experimental e não altera a decisão oficial.", source)
+        self.assertIn("Acordo total", source)
+        self.assertNotIn("order_send", source)
 
     def test_comparison_is_read_only_and_reports_unavailable_without_runs(self):
         before = self.path.stat().st_mtime_ns

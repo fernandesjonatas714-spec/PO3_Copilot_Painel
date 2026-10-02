@@ -47,6 +47,12 @@ def _normalize_answers(answers: Any) -> list[dict]:
         raise JevError("Jev deve retornar exatamente seis respostas.", error_type="INVALID_ANSWER_SHAPE")
     expected = {"regime_macro", "contexto_domestico", "contexto_tecnico", "risco_evento",
                 "conflito_contexto", "contexto_operacional"}
+    choice_options = {
+        "regime_macro": {"APETITE_A_RISCO", "AVERSAO_A_RISCO", "MISTO", "INDETERMINADO"},
+        "contexto_domestico": {"POSITIVO", "NEGATIVO", "NEUTRO", "MISTO", "INDETERMINADO"},
+        "contexto_tecnico": {"ALTISTA", "BAIXISTA", "NEUTRO", "CONFLITANTE", "INDETERMINADO"},
+        "contexto_operacional": {"CONTEXTO_COMPRADOR", "CONTEXTO_VENDEDOR", "AGUARDAR", "SEM_SETUP", "INDETERMINADO"},
+    }
     out = []
     for raw in answers:
         if not isinstance(raw, dict):
@@ -58,20 +64,44 @@ def _normalize_answers(answers: Any) -> list[dict]:
         item = {"decision_id": decision_id, "answer_type": raw.get("answer_type"),
                 "raw_answer": value, "confidence": raw.get("confidence"),
                 "probabilities": raw.get("probabilities")}
+        confidence = raw.get("confidence")
+        if confidence is not None:
+            try: confidence = float(confidence)
+            except (TypeError, ValueError) as exc:
+                raise JevError("Confidence Jev inválida.", error_type="INVALID_CONFIDENCE") from exc
+            if not 0.0 <= confidence <= 1.0:
+                raise JevError("Confidence Jev fora do intervalo 0..1.", error_type="INVALID_CONFIDENCE")
+            item["confidence"] = confidence
+        probabilities = raw.get("probabilities")
+        if probabilities is not None:
+            values = probabilities.values() if isinstance(probabilities, dict) else probabilities if isinstance(probabilities, list) else None
+            if values is None:
+                raise JevError("Probabilidades Jev inválidas.", error_type="INVALID_PROBABILITIES")
+            try: values = [float(value) for value in values]
+            except (TypeError, ValueError) as exc:
+                raise JevError("Probabilidades Jev inválidas.", error_type="INVALID_PROBABILITIES") from exc
+            if any(value < 0.0 or value > 1.0 for value in values):
+                raise JevError("Probabilidades Jev fora do intervalo 0..1.", error_type="INVALID_PROBABILITIES")
         if decision_id == "risco_evento":
             try:
                 score = float(raw.get("raw_score", value))
             except (TypeError, ValueError) as exc:
                 raise JevError("Score Jev inválido.", error_type="INVALID_SCORE") from exc
+            if not 0.0 <= score <= 9.0:
+                raise JevError("Score Jev fora do intervalo 0..9.", error_type="INVALID_SCORE")
             item["raw_score"] = score
-            item["normalized_answer"] = max(0.0, min(10.0, score * 10.0 / 9.0))
+            item["normalized_answer"] = score * 10.0 / 9.0
         elif decision_id == "conflito_contexto":
             try: probability = float(raw.get("noul_probability", raw.get("probability", value)))
             except (TypeError, ValueError) as exc:
                 raise JevError("Probabilidade NOUL inválida.", error_type="INVALID_NOUL") from exc
+            if not 0.0 <= probability <= 1.0:
+                raise JevError("Probabilidade NOUL fora do intervalo 0..1.", error_type="INVALID_NOUL")
             item["noul_probability"] = probability
             item["normalized_answer"] = "SIM" if probability >= 0.50 else "NAO"
         else:
+            if value not in choice_options[decision_id]:
+                raise JevError(f"CHOICE inválido para {decision_id}: {value}", error_type="INVALID_CHOICE")
             item["normalized_answer"] = value
         out.append(item)
     if {item["decision_id"] for item in out} != expected:
