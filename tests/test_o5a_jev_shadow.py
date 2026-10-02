@@ -111,6 +111,22 @@ class O5AJevTests(unittest.TestCase):
         with sqlite3.connect(self.path) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM jev_shadow_runs WHERE symbol='DOL'").fetchone()[0], 0)
 
+    def test_stale_running_run_is_recovered_without_duplicate(self):
+        state_id = insert_market_state(self.state(), self.path, cutoff_at_utc="2026-01-01T10:00:00+00:00", symbol="WINV26")
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("""INSERT INTO jev_shadow_runs
+                (market_state_id,symbol,cutoff_at_utc,state_hash,jev_engine_version,jev_question_version,
+                 model_configured,status,created_at_utc) VALUES (?,?,?,?,?,?,?,?,?)""",
+                (state_id, "WINV26", "2026-01-01T10:00:00+00:00", "hash", JEV_ENGINE_VERSION,
+                 JEV_QUESTION_VERSION, "typesafe/jev-1.13", "RUNNING", "2020-01-01T00:00:00+00:00"))
+            run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        with patch("po3.jev_worker.JEV_SHADOW_ENABLED", True):
+            result = run_jev_for_market_state(self.path, state_id, lambda s, q: {"answers": self.answers()})
+        self.assertTrue(result["recovered"])
+        with sqlite3.connect(self.path) as conn:
+            row = conn.execute("SELECT id,status,recovered_after_restart FROM jev_shadow_runs").fetchone()
+        self.assertEqual(row, (run_id, "OK", 1))
+
     def test_worker_lease_name_is_separate(self):
         source = Path(__file__).parents[1].joinpath("po3", "jev_worker.py").read_text(encoding="utf-8")
         self.assertIn('lease_name: str = "po3-jev"', source)
