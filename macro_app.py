@@ -698,7 +698,7 @@ def render_operational_supervisor(symbol: str) -> None:
     official = snapshot.get("official_analysis", {}).get("latest") or {}
     jev = _latest_jev(db_path, symbol)
     feed = collector.get("feed_liveness_status") or collector.get("status")
-    collection = "OK" if feed in {"LIVE", "ATUAL", "SEM_NOVO_CANDLE_MERCADO_FECHADO"} else ("ATENÇÃO" if feed else "ERRO")
+    collection = "OK" if (not session.get("market_active") or feed in {"LIVE", "ATUAL", "SEM_NOVO_CANDLE_MERCADO_FECHADO"}) else ("ATENÇÃO" if feed else "ERRO")
     official_status = official.get("status") or "PROCESSANDO"
     ai_status = "OK" if official_status == "OK" else "PROCESSANDO" if official_status == "PROCESSANDO" else "ERRO" if official_status == "ERRO" else "ATENÇÃO"
     with st.container(border=True):
