@@ -9,11 +9,13 @@ if not exist "%PYTHON_EXE%" (
 )
 if exist "%PAINEL_DIR%.env" (
   for /f "usebackq tokens=1,* delims==" %%A in (`findstr /b "MT5_TERMINAL_PATH=" "%PAINEL_DIR%.env"`) do set "MT5_TERMINAL_PATH=%%B"
+    for /f "usebackq tokens=1,* delims==" %%A in (`findstr /b "JEV_SHADOW_ENABLED=" "%PAINEL_DIR%.env"`) do set "JEV_SHADOW_ENABLED=%%B"
 )
 if not defined MT5_TERMINAL_PATH set "MT5_TERMINAL_PATH=C:\Program Files\Clear Investimentos MT5 Terminal\terminal64.exe"
 set "AUTO_DATA_COLLECTION=true"
 set "AUTO_DECISION_ENGINE=true"
 set "SUPERVISOR_AI_ENABLED=true"
 set "SHADOW_MODE_ENABLED=true"
+if not defined JEV_SHADOW_ENABLED set "JEV_SHADOW_ENABLED=false"
 "%PYTHON_EXE%" -m po3.launcher
 endlocal
