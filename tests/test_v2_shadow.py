@@ -2,6 +2,8 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -99,6 +101,57 @@ class ShadowModeTests(unittest.TestCase):
         self.assertEqual(shadow_report(self.path, "WIN")["total_runs"], 1)
         self.assertEqual(shadow_report(self.path, "DOL")["total_runs"], 1)
         self.assertEqual(shadow_report(self.path)["OK"], 2)
+
+    def test_backlog_progresses_with_limit_one_without_starvation(self):
+        shadow.SHADOW_MODE_ENABLED = True
+        states = [self.add_state(cutoff=f"2026-01-01T10:0{i}:00Z") for i in range(3)]
+        seen = []
+        runner = lambda payload: seen.append(payload["timestamp"]) or self.runner_result()
+        for expected in states:
+            summary = process_pending_shadow_states(self.path, runner, limit=1, model_configured="modelo-fake")
+            self.assertEqual((summary["created"], summary["ignored"]), (1, 0))
+        fourth = process_pending_shadow_states(self.path, runner, limit=1, model_configured="modelo-fake")
+        self.assertEqual((fourth["created"], fourth["ignored"], len(seen)), (0, 0, 3))
+        with sqlite3.connect(self.path) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM shadow_runs").fetchone()[0], 3)
+        self.assertEqual(seen, [f"2026-01-01T10:0{i}:00Z" for i in range(3)])
+
+    def test_backlog_runner_order_uses_cutoff_then_id(self):
+        shadow.SHADOW_MODE_ENABLED = True
+        first = self.add_state(cutoff="2026-01-01T10:05:00Z")
+        second = self.add_state(cutoff="2026-01-01T10:00:00Z")
+        third = self.add_state(symbol="DOL", cutoff="2026-01-01T10:00:00Z")
+        received = []
+        process_pending_shadow_states(self.path, lambda payload: received.append(payload["timestamp"]) or self.runner_result(), limit=10, model_configured="modelo-fake")
+        self.assertEqual(received, ["2026-01-01T10:00:00Z", "2026-01-01T10:00:00Z", "2026-01-01T10:05:00Z"])
+        self.assertEqual([second, third, first], sorted([second, third, first], key=lambda value: (self._cutoff(value), value)))
+
+    def _cutoff(self, state_id):
+        with sqlite3.connect(self.path) as conn:
+            return conn.execute("SELECT cutoff_at_utc FROM market_states WHERE id=?", (state_id,)).fetchone()[0]
+
+    def test_concurrent_same_configuration_creates_one_run_and_calls_runner_once(self):
+        shadow.SHADOW_MODE_ENABLED = True
+        state_id = self.add_state()
+        calls = []
+        lock = threading.Lock()
+        def runner(payload):
+            with lock:
+                calls.append(payload)
+            time.sleep(0.05)
+            return self.runner_result()
+        results = []
+        def invoke():
+            results.append(run_shadow_for_market_state(self.path, state_id, runner, model_configured="modelo-fake"))
+        threads = [threading.Thread(target=invoke) for _ in range(2)]
+        for thread in threads: thread.start()
+        for thread in threads: thread.join()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(sum(result["created"] for result in results), 1)
+        self.assertEqual(sum(result.get("reason") == "IDEMPOTENTE" for result in results), 1)
+        with sqlite3.connect(self.path) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM shadow_runs").fetchone()[0], 1)
 
     def test_report_is_read_only_and_flag_remains_false_by_default(self):
         before = Path(self.path).read_bytes()

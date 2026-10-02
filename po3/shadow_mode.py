@@ -113,7 +113,18 @@ def process_pending_shadow_states(db_path: str | Path, decision_runner: Callable
     if not SHADOW_MODE_ENABLED:
         return {"found": 0, "created": 0, "ignored": 0, "OK": 0, "ERRO": 0, "DESABILITADO": 0}
     with _connect_ro(db_path) as conn:
-        rows = conn.execute("SELECT id FROM market_states ORDER BY cutoff_at_utc ASC,id ASC LIMIT ?", (max(0, int(limit)),)).fetchall()
+        rows = conn.execute("""SELECT s.id
+            FROM market_states AS s
+            WHERE NOT EXISTS (
+                SELECT 1 FROM shadow_runs AS r
+                WHERE r.market_state_id=s.id
+                  AND r.shadow_mode_version=?
+                  AND r.decision_engine_version=COALESCE(s.decision_engine_version,'UNSPECIFIED')
+                  AND r.prompt_version=COALESCE(s.prompt_version,'UNSPECIFIED')
+                  AND r.model_configured=?
+            )
+            ORDER BY s.cutoff_at_utc ASC,s.id ASC
+            LIMIT ?""", (shadow_mode_version, model_configured, max(0, int(limit)))).fetchall()
     summary = {"found": len(rows), "created": 0, "ignored": 0, "OK": 0, "ERRO": 0}
     for row in rows:
         result = run_shadow_for_market_state(db_path, row["id"], decision_runner, model_configured=model_configured, shadow_mode_version=shadow_mode_version)
