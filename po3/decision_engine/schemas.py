@@ -3,15 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict, field
 from typing import Any
 
-DECISION_ENGINE_VERSION = "1.0.0"
-PROMPT_VERSION = "1.0.0"
-SCHEMA_VERSION = "1.0.0"
+DECISION_ENGINE_VERSION = "1.1.0"
+PROMPT_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.1.0"
 
 CHOICES = {
     "regime_macro": {"APETITE_A_RISCO", "AVERSAO_A_RISCO", "MISTO", "INDETERMINADO"},
     "contexto_domestico": {"POSITIVO", "NEGATIVO", "NEUTRO", "MISTO", "INDETERMINADO"},
     "contexto_tecnico": {"ALTISTA", "BAIXISTA", "NEUTRO", "CONFLITANTE", "INDETERMINADO"},
-    "contexto_operacional": {"CONTEXTO_COMPRADOR", "CONTEXTO_VENDEDOR", "AGUARDAR", "SEM_SETUP", "BLOQUEADO_POR_EVENTO", "INDETERMINADO"},
+    "contexto_operacional": {"CONTEXTO_COMPRADOR", "CONTEXTO_VENDEDOR", "AGUARDAR", "SEM_SETUP", "INDETERMINADO"},
 }
 DECISION_TYPES = {"regime_macro": "CHOICE", "contexto_domestico": "CHOICE", "contexto_tecnico": "CHOICE", "risco_evento": "SCORE", "conflito_contexto": "NOUL", "contexto_operacional": "CHOICE"}
 

@@ -10,6 +10,8 @@ from po3.outcome_engine import process_pending_outcomes
 from po3.market_state_store import freeze_market_state
 from po3.collection.freshness import assess_freshness, is_market_active
 from po3.collection.time_alignment import Mt5TimeAlignmentDetector
+from po3.v2_config import SHADOW_MODE_ENABLED
+from po3.decision_engine.schemas import DECISION_ENGINE_VERSION, PROMPT_VERSION
 
 @dataclass(frozen=True)
 class CollectorConfig:
@@ -150,6 +152,18 @@ def run_worker(config:CollectorConfig,mt5:Any,stop_event:Event|None=None,max_cyc
     stop_event=stop_event or Event(); cycles=0
     alignment_detector=Mt5TimeAlignmentDetector()
     provider=snapshot_provider or (lambda cutoff:_default_snapshot_provider(config,cutoff,alignment_detector,mt5))
+    shadow_runner = None
+    shadow_model = None
+    if SHADOW_MODE_ENABLED:
+        # Importação e configuração são tardias: com a flag desligada o
+        # coletor factual não carrega OpenRouter nem cria chamadas de IA.
+        try:
+            from po3.shadow_runner import build_shadow_decision_runner
+            shadow_runner, shadow_model = build_shadow_decision_runner()
+        except Exception as exc:
+            # Falha de configuração do Shadow não pode derrubar o coletor nem
+            # impedir o finally de liberar o lease.
+            print(f"Shadow Mode indisponível: {type(exc).__name__}: {exc}", flush=True)
     existing=list_states(config.db_path,config.symbol)
     last_slot=_slot(datetime.fromisoformat(existing[-1]["cutoff_at_utc"]) if existing else datetime(1970,1,1,tzinfo=timezone.utc),config.state_interval_minutes) if existing else None
     try:
@@ -182,8 +196,16 @@ def run_worker(config:CollectorConfig,mt5:Any,stop_event:Event|None=None,max_cyc
                                         start_price=start_price,start_bar_open_time=expected_start,
                                         start_price_status="DISPONIVEL" if start_bar is not None else "INDISPONIVEL")
                     last_slot=slot; process_pending_outcomes(config.db_path,symbol=config.symbol,now_utc=now)
+                if SHADOW_MODE_ENABLED and shadow_runner is not None:
+                    # Shadow é observacional, limitado por ciclo e isolado do
+                    # caminho factual. Uma falha nunca interrompe o worker.
+                    from po3.shadow_mode import process_pending_shadow_states
+                    process_pending_shadow_states(config.db_path, shadow_runner, limit=1,
+                                                  model_configured=shadow_model or "UNSPECIFIED",
+                                                  decision_engine_version=DECISION_ENGINE_VERSION,
+                                                  prompt_version=PROMPT_VERSION, symbol=config.symbol)
             except Exception as exc:
-                print(f"Worker factual: {type(exc).__name__}",flush=True)
+                print(f"Worker factual: {type(exc).__name__}: {exc}",flush=True)
             if not heartbeat(config.lease_name,config.symbol,owner,config.db_path,config.lease_ttl_seconds):raise RuntimeError("Lease perdido durante a coleta")
             cycles+=1
             if max_cycles is None:

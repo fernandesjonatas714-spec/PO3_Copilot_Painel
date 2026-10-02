@@ -164,6 +164,7 @@ def build_supervisor_snapshot(db_path: str, symbol: str, now_utc: datetime | Non
         lease = conn.execute("SELECT * FROM collector_leases WHERE collector_name='po3-m1' AND symbol=?", (symbol,)).fetchone()
         latest_m1 = conn.execute("SELECT MAX(timestamp_utc) FROM market_bars_m1 WHERE symbol=?", (symbol,)).fetchone()[0]
         latest_state = conn.execute("SELECT * FROM market_states WHERE symbol=? ORDER BY cutoff_at_utc DESC,id DESC LIMIT 1", (symbol,)).fetchone()
+        latest_shadow = conn.execute("SELECT id,market_state_id,cutoff_at_utc,status,model_configured,model_used,error_type,error_message,created_at_utc FROM shadow_runs WHERE symbol=? ORDER BY cutoff_at_utc DESC,id DESC LIMIT 1", (symbol,)).fetchone()
         outcome_rows = conn.execute("SELECT horizon_code,status,COUNT(*) n FROM observed_outcomes WHERE symbol=? GROUP BY horizon_code,status", (symbol,)).fetchall()
         outcomes = {"total": sum(int(row["n"]) for row in outcome_rows), "por_horizon": {}, "por_status": {}}
         for row in outcome_rows:
@@ -188,11 +189,14 @@ def build_supervisor_snapshot(db_path: str, symbol: str, now_utc: datetime | Non
         o1 = _validate_o1(conn, symbol, now)
     finally:
         conn.close()
-    dangerous = security["AUTO_DECISION_ENGINE"] or security["SHADOW_MODE_ENABLED"]
+    shadow_data = dict(latest_shadow) if latest_shadow else None
+    dangerous = security["AUTO_DECISION_ENGINE"]
     if dangerous:
         overall = "ATENCAO_SEGURANCA"
     elif integrity != "ok":
         overall = "ATENCAO_BANCO"
+    elif security["SHADOW_MODE_ENABLED"] and shadow_data and shadow_data.get("status") == "ERRO":
+        overall = "ATENCAO_SHADOW"
     elif not active:
         overall = "AGUARDANDO_SESSAO"
     elif runtime_data.get("clock_alignment_status") not in SAFE_CLOCK_STATUSES:
@@ -213,7 +217,8 @@ def build_supervisor_snapshot(db_path: str, symbol: str, now_utc: datetime | Non
         "lease": {"active": lease_active, "owner_id": lease_data.get("owner_id"), "expires_at": lease_data.get("expires_at")},
         "database": {"integrity_status": integrity, **counts},
         "latest_m1": {"timestamp_utc": latest_m1}, "latest_market_state": latest,
-        "outcomes": outcomes, "security": security, "o1_validation": o1, "overall_status": overall,
+        "outcomes": outcomes, "shadow": {"enabled": security["SHADOW_MODE_ENABLED"], "latest": shadow_data},
+        "security": security, "o1_validation": o1, "overall_status": overall,
     }
     return snapshot
 

@@ -14,5 +14,6 @@ if not defined MT5_TERMINAL_PATH set "MT5_TERMINAL_PATH=C:\Program Files\Clear I
 set "AUTO_DATA_COLLECTION=true"
 set "AUTO_DECISION_ENGINE=false"
 set "SUPERVISOR_AI_ENABLED=true"
+set "SHADOW_MODE_ENABLED=true"
 "%PYTHON_EXE%" -m po3.launcher
 endlocal

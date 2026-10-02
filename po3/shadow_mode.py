@@ -17,6 +17,7 @@ from typing import Any, Callable
 from po3.calibration import state_hash
 from po3.evaluation_engine import sample_band
 from po3.replay_engine import sanitize_replay_state
+from po3.decision_engine.schemas import DECISION_ENGINE_VERSION, PROMPT_VERSION
 from po3.v2_config import SHADOW_MODE_ENABLED
 
 SHADOW_MODE_VERSION = "1.0.0"
@@ -74,8 +75,8 @@ def run_shadow_for_market_state(db_path: str | Path, market_state_id: int, decis
     state = _state_row(db_path, market_state_id)
     if state is None:
         return {"status": "ERRO", "created": False, "error_type": "MarketStateNaoEncontrado"}
-    engine_version = decision_engine_version or state["decision_engine_version"] or "UNSPECIFIED"
-    prompt = prompt_version or state["prompt_version"] or "UNSPECIFIED"
+    engine_version = decision_engine_version or DECISION_ENGINE_VERSION
+    prompt = prompt_version or PROMPT_VERSION
     now = datetime.now(timezone.utc).isoformat()
     with sqlite3.connect(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -109,25 +110,27 @@ def run_shadow_for_market_state(db_path: str | Path, market_state_id: int, decis
 
 
 def process_pending_shadow_states(db_path: str | Path, decision_runner: Callable[[dict], Any], *, limit: int = 10,
-                                  model_configured: str = "UNSPECIFIED", shadow_mode_version: str = SHADOW_MODE_VERSION) -> dict:
+                                  model_configured: str = "UNSPECIFIED", shadow_mode_version: str = SHADOW_MODE_VERSION,
+                                  decision_engine_version: str = DECISION_ENGINE_VERSION,
+                                  prompt_version: str = PROMPT_VERSION, symbol: str | None = None) -> dict:
     if not SHADOW_MODE_ENABLED:
         return {"found": 0, "created": 0, "ignored": 0, "OK": 0, "ERRO": 0, "DESABILITADO": 0}
     with _connect_ro(db_path) as conn:
-        rows = conn.execute("""SELECT s.id
+        clauses = ["NOT EXISTS (SELECT 1 FROM shadow_runs AS r WHERE r.market_state_id=s.id AND r.shadow_mode_version=? AND r.decision_engine_version=? AND r.prompt_version=? AND r.model_configured=?)"]
+        params: list[Any] = [shadow_mode_version, decision_engine_version, prompt_version, model_configured]
+        if symbol is not None:
+            clauses.append("s.symbol=?")
+            params.append(symbol)
+        rows = conn.execute(f"""SELECT s.id
             FROM market_states AS s
-            WHERE NOT EXISTS (
-                SELECT 1 FROM shadow_runs AS r
-                WHERE r.market_state_id=s.id
-                  AND r.shadow_mode_version=?
-                  AND r.decision_engine_version=COALESCE(s.decision_engine_version,'UNSPECIFIED')
-                  AND r.prompt_version=COALESCE(s.prompt_version,'UNSPECIFIED')
-                  AND r.model_configured=?
-            )
+            WHERE {' AND '.join(clauses)}
             ORDER BY s.cutoff_at_utc ASC,s.id ASC
-            LIMIT ?""", (shadow_mode_version, model_configured, max(0, int(limit)))).fetchall()
+            LIMIT ?""", tuple(params + [max(0, int(limit))])).fetchall()
     summary = {"found": len(rows), "created": 0, "ignored": 0, "OK": 0, "ERRO": 0}
     for row in rows:
-        result = run_shadow_for_market_state(db_path, row["id"], decision_runner, model_configured=model_configured, shadow_mode_version=shadow_mode_version)
+        result = run_shadow_for_market_state(db_path, row["id"], decision_runner, model_configured=model_configured,
+                                              shadow_mode_version=shadow_mode_version,
+                                              decision_engine_version=decision_engine_version, prompt_version=prompt_version)
         if result.get("created"):
             summary["created"] += 1
         else:
