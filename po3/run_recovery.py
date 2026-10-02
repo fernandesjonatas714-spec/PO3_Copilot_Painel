@@ -54,9 +54,11 @@ def run_is_recoverable(
         # e um novo worker assumiu; proprietário ausente é legado e fica seguro.
         if row_owner and lease["owner_id"] != row_owner:
             return True
-        return False
+        if row_owner:
+            return False
+        created = _parse_utc(row[timestamp_column] if timestamp_column in row.keys() else None)
+        return bool(created and now - created >= timedelta(seconds=max(1, int(stale_timeout_seconds))))
     created = _parse_utc(row[timestamp_column] if timestamp_column in row.keys() else None)
     if created is None:
         return False
     return now - created >= timedelta(seconds=max(1, int(stale_timeout_seconds)))
-
