@@ -138,9 +138,15 @@ def build_macro(mt5, primary: str, timeframe, *, as_of=None) -> dict:
     short_return = (base[-1] / base[-5] - 1.0) if len(base) >= 5 else None
     long_return = (base[-1] / base[-21] - 1.0) if len(base) >= 21 else None
     volatility = pstdev(base_ret[-20:]) if len(base_ret) >= 20 else None
+    short_points = (base[-1] - base[-5]) if len(base) >= 5 else None
+    long_points = (base[-1] - base[-21]) if len(base) >= 21 else None
+    # Expressa a mesma volatilidade percentual na última referência da série.
+    volatility_points = (volatility * base[-1]) if volatility is not None else None
     return {"available": bool(factors), "score": score, "bias": bias, "confidence": confidence,
             "factors": factors, "leaders": leaders, "leaders_missing": leaders_missing,
             "breadth": {"positive": positive, "negative": negative, "flat": flat, "total": len(leaders)},
-            "market": {"return_short": short_return, "return_long": long_return, "volatility": volatility},
+            "market": {"return_short": short_return, "return_long": long_return, "volatility": volatility,
+                       "return_short_points": short_points, "return_long_points": long_points,
+                       "volatility_points": volatility_points},
             "missing": missing, "expected": {k:list(v[1]) for k,v in GROUPS.items()}, "timeframe": str(timeframe),
             "as_of": (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()}

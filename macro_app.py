@@ -72,6 +72,29 @@ def pct(value):
     return "—" if value is None else f"{float(value)*100:+.2f}%"
 
 
+def _format_kpi_points(value, *, signed: bool = True) -> str:
+    if value is None:
+        return "—"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    decimals = 0 if number.is_integer() else 1
+    text = f"{abs(number):,.{decimals}f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    if signed:
+        prefix = "+" if number > 0 else "-" if number < 0 else ""
+    else:
+        prefix = "-" if number < 0 else ""
+    return f"{prefix}{text} pontos"
+
+
+def _kpi_percent_points(percent_value, points_value, *, volatility: bool = False) -> str:
+    if percent_value is None or points_value is None:
+        return "—"
+    percent_text = f"{float(percent_value) * 100:.3f}%" if volatility else pct(percent_value)
+    return f"{percent_text} · {_format_kpi_points(points_value, signed=not volatility)}"
+
+
 def sign_style(value):
     try:
         number = float(value)
@@ -376,9 +399,9 @@ def render_panel(snapshot):
     kpis = [
         ("Ativo", snapshot.symbol, ""),
         ("Último preço", f"{snapshot.last_price:,.0f}".replace(",", "."), ""),
-        ("5 barras", pct(market.get("return_short")), _tone_class(market.get("return_short"))),
-        ("20 barras", pct(market.get("return_long")), _tone_class(market.get("return_long"))),
-        ("Volatilidade", "—" if market.get("volatility") is None else f"{market['volatility']*100:.3f}%", ""),
+        ("5 barras", _kpi_percent_points(market.get("return_short"), market.get("return_short_points")), _tone_class(market.get("return_short"))),
+        ("20 barras", _kpi_percent_points(market.get("return_long"), market.get("return_long_points")), _tone_class(market.get("return_long"))),
+        ("Volatilidade", _kpi_percent_points(market.get("volatility"), market.get("volatility_points"), volatility=True), ""),
         ("Atualizado", snapshot.as_of.strftime("%H:%M:%S"), ""),
     ]
     st.markdown('<div class="kpi-grid">' + "".join(f'<div class="kpi"><span>{label}</span><strong class="{cls}">{value}</strong></div>' for label, value, cls in kpis) + '</div>', unsafe_allow_html=True)
