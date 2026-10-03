@@ -385,17 +385,8 @@ def _card_evaluation_sample(report: dict, horizon: str) -> list[str]:
     ]
 
 
-def render_panel(snapshot):
-    macro = snapshot.macro or {}
-    score = score_value(macro.get("score"))
-    name, tone = bias(score)
-    market = macro.get("market", {})
-    factors = macro.get("factors", [])
-    leaders = macro.get("leaders", [])
-    frames = macro.get("frames", {})
-
+def _render_panel_header(snapshot, market):
     st.markdown(f'''<div class="topline"><div><div class="asset-title">{snapshot.symbol}</div><div class="asset-meta"><span class="live-dot"></span>MT5 conectado · somente leitura · {snapshot.as_of.strftime('%d/%m/%Y %H:%M:%S')}</div></div></div>''', unsafe_allow_html=True)
-
     kpis = [
         ("Ativo", snapshot.symbol, ""),
         ("Último preço", f"{snapshot.last_price:,.0f}".replace(",", "."), ""),
@@ -406,11 +397,13 @@ def render_panel(snapshot):
     ]
     st.markdown('<div class="kpi-grid">' + "".join(f'<div class="kpi"><span>{label}</span><strong class="{cls}">{value}</strong></div>' for label, value, cls in kpis) + '</div>', unsafe_allow_html=True)
 
+
+def _render_panel_market(snapshot, macro, score, tone, name):
+    frames = macro.get("frames", {})
     frame_keys = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1"]
     labels = ["1 min", "5 min", "15 min", "30 min", "1 hora", "4 horas", "Diário", "Semanal", "Mensal"]
     evaluation_report = _evaluation_report_for_ui(snapshot.symbol)
-    evaluation_horizons = {"M5": "5m", "M15": "15m", "M30": "30m", "H1": "60m",
-                           "D1": "Diário", "W1": "Semanal", "MN1": "Mensal"}
+    evaluation_horizons = {"M5": "5m", "M15": "15m", "M30": "30m", "H1": "60m", "D1": "Diário", "W1": "Semanal", "MN1": "Mensal"}
     timeframe_rows = []
     for label, key in zip(labels, frame_keys):
         data = frames.get(key, {})
@@ -421,20 +414,17 @@ def render_panel(snapshot):
         sample_lines = _card_evaluation_sample(evaluation_report, evaluation_horizons[key]) if key in evaluation_horizons else ["Alta: —", "Baixa: —", "Neutro: —"]
         sample_html = '<span class="metrics">Amostra Fechamento</span>' + "".join(f'<span class="metrics">{line}</span>' for line in sample_lines)
         timeframe_rows.append(f'<div class="tf-card {cls}"><b>{label}</b><span>{status}</span>{metrics_html}{sample_html}</div>')
-    tf_html = "".join(timeframe_rows)
+    leaders = macro.get("leaders", [])
+    leaders_rows = [[item.get("ativo", "—"), item.get("simbolo", "—"), f"{float(item.get('direcao', 0)):+.2f}"] for item in leaders]
+    leaders_html = _compact_table(["Ativo", "Símbolo", "Direção"], leaders_rows, numeric_columns=(2,)) if leaders_rows else '<div class="empty">Ações líderes ainda não disponíveis.</div>'
     confidence = str(macro.get("confidence", "baixa")).upper()
     aviso = "Compra preferencial" if tone == "green" else "Venda preferencial" if tone == "red" else "Sem direção predominante"
-    leaders_rows = []
-    for item in leaders:
-        leaders_rows.append([item.get("ativo", "—"), item.get("simbolo", "—"), f"{float(item.get('direcao', 0)):+.2f}"])
-    factors_rows = []
-    for item in factors:
-        factors_rows.append([item.get("grupo", "—"), item.get("simbolo", "—"), f"{float(item.get('direcao', 0)):+.3f}", f"{float(item.get('correlacao', 0)):+.3f}", f"{float(item.get('contribuicao', 0)):+.3f}"])
-    leaders_html = _compact_table(["Ativo", "Símbolo", "Direção"], leaders_rows, numeric_columns=(2,)) if leaders_rows else '<div class="empty">Ações líderes ainda não disponíveis.</div>'
+    st.markdown(f'''<div class="main-grid"><section class="panel-card"><div class="panel-title">Sinais por tempo</div><div class="tf-grid">{"".join(timeframe_rows)}</div></section><section class="panel-card center-panel"><div class="panel-title">Resumo ponderado</div>{gauge("Direção do ambiente", score, f"Confiança {confidence}", True)}<div class="summary {tone}">{name} · {score:+.1f}</div><div class="notice {tone}">{aviso}, confirme no setup técnico do WIN.</div></section><section class="panel-card"><div class="panel-title">Ações líderes da B3</div>{leaders_html}</section></div>''', unsafe_allow_html=True)
+
+
+def _render_panel_context(factors):
+    factors_rows = [[item.get("grupo", "—"), item.get("simbolo", "—"), f"{float(item.get('direcao', 0)):+.3f}", f"{float(item.get('correlacao', 0)):+.3f}", f"{float(item.get('contribuicao', 0)):+.3f}"] for item in factors]
     factors_html = _compact_table(["Grupo", "Símbolo", "Direção", "Correlação", "Peso"], factors_rows, numeric_columns=(2, 3, 4)) if factors_rows else '<div class="empty">Sem fatores macro suficientes.</div>'
-
-    st.markdown(f'''<div class="main-grid"><section class="panel-card"><div class="panel-title">Sinais por tempo</div><div class="tf-grid">{tf_html}</div></section><section class="panel-card center-panel"><div class="panel-title">Resumo ponderado</div>{gauge("Direção do ambiente", score, f"Confiança {confidence}", True)}<div class="summary {tone}">{name} · {score:+.1f}</div><div class="notice {tone}">{aviso}, confirme no setup técnico do WIN.</div></section><section class="panel-card"><div class="panel-title">Ações líderes da B3</div>{leaders_html}</section></div>''', unsafe_allow_html=True)
-
     left, right = st.columns([1.55, 1])
     with left:
         st.markdown(f'<section class="panel-card"><div class="panel-title">Correlações externas e domésticas</div>{factors_html}</section>', unsafe_allow_html=True)
@@ -442,20 +432,18 @@ def render_panel(snapshot):
         with st.container(height=220, border=True):
             st.markdown('<div class="panel-title">Perguntas para IA</div>', unsafe_allow_html=True)
             questions = [
-                "1. Qual é o viés do mercado hoje?",
-                "2. Quais eventos podem mover o WIN?",
+                "1. Qual é o viés do mercado hoje?", "2. Quais eventos podem mover o WIN?",
                 "3. Como estão Nasdaq, S&P, dólar, juros, petróleo, ouro e VIX?",
-                "4. Há alinhamento entre os tempos gráficos?",
-                "5. O setup está alinhado ao viés macro?",
-                "6. O que valida uma compra?",
-                "7. O que valida uma venda?",
-                "8. Quando devo ficar de fora?",
+                "4. Há alinhamento entre os tempos gráficos?", "5. O setup está alinhado ao viés macro?",
+                "6. O que valida uma compra?", "7. O que valida uma venda?", "8. Quando devo ficar de fora?",
             ]
             for index, question in enumerate(questions):
                 if st.button(question, key=f"ai_question_{index}", use_container_width=True):
                     st.session_state["pending_ai_question"] = question
                     st.rerun()
 
+
+def _render_panel_panorama(snapshot, macro):
     st.markdown('<div class="panel-card" style="margin-top:.55rem"><div class="panel-title">Panorama do pregão</div></div>', unsafe_allow_html=True)
     if st.button("Análise do dia", key="daily_analysis", type="primary", help="Busca o contexto disponível agora e gera uma leitura macro para o pregão"):
         st.session_state["daily_analysis_status"] = "Consultando fontes e IA..."
@@ -492,7 +480,6 @@ def render_panel(snapshot):
         sources = st.session_state.get("daily_analysis_sources", [])
         if sources:
             st.caption("Consulta das fontes: " + " · ".join(sources))
-
     calendar = _economic_calendar()
     if calendar.get("available"):
         calendar = {**calendar, "events": filter_relevant_events(calendar.get("events", []))}
@@ -512,9 +499,22 @@ def render_panel(snapshot):
             st.info("Nenhum evento econômico relevante dos EUA encontrado para hoje.")
         else:
             st.info(f"Calendário econômico temporariamente indisponível. {calendar.get('message', '')}")
-    missing = [item for item in macro.get("missing", []) if str(item).strip().lower() != "volatilidade"]
-    if missing:
-        pass
+
+
+def render_panel(snapshot, slots=None):
+    macro = snapshot.macro or {}
+    score = score_value(macro.get("score"))
+    name, tone = bias(score)
+    market = macro.get("market", {})
+    regions = slots or {}
+    with regions.get("header", st).container() if regions.get("header") else st.container():
+        _render_panel_header(snapshot, market)
+    with regions.get("market", st).container() if regions.get("market") else st.container():
+        _render_panel_market(snapshot, macro, score, tone, name)
+    with regions.get("context", st).container() if regions.get("context") else st.container():
+        _render_panel_context(macro.get("factors", []))
+    with regions.get("panorama", st).container() if regions.get("panorama") else st.container():
+        _render_panel_panorama(snapshot, macro)
 
 
 def _local_chat_answer(question: str, snapshot) -> str:
@@ -947,15 +947,23 @@ with st.sidebar:
     sidebar_evaluation_slot = st.empty()
 
 supervisor_status_slot = st.empty()
-main_live_slot = st.empty()
+main_header_slot = st.empty()
+main_market_slot = st.empty()
+main_context_slot = st.empty()
+main_panorama_slot = st.empty()
+main_region_slots = {
+    "header": main_header_slot,
+    "market": main_market_slot,
+    "context": main_context_slot,
+    "panorama": main_panorama_slot,
+}
 
 @st.fragment(run_every=f"{seconds}s" if auto else None)
 def live():
     try:
         snapshot = read_snapshot(terminal, symbol)
         st.session_state["latest_snapshot"] = snapshot
-        with main_live_slot.container():
-            render_panel(snapshot)
+        render_panel(snapshot, slots=main_region_slots)
         with sidebar_evaluation_slot.container():
             render_evaluation(symbol)
     except MT5ReadError as exc:
