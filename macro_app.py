@@ -36,6 +36,7 @@ st.markdown("""
 .gauge-wrap{text-align:center;padding:.1rem 0 .2rem}.gauge{width:156px;height:78px;margin:.35rem auto .55rem;border-radius:156px 156px 0 0;background:conic-gradient(from 270deg at 50% 100%,#e53935 0deg,#efb14b 78deg,#dfe4e8 90deg,#72bf94 102deg,#00883e 180deg);position:relative;overflow:hidden}.gauge:after{content:'';position:absolute;inset:13px 13px 0;border-radius:143px 143px 0 0;background:#161b22}.needle{position:absolute;z-index:2;bottom:0;left:50%;width:3px;height:62px;background:#aab4c3;transform-origin:bottom center;border-radius:3px;transform:rotate(var(--rot))}.hub{position:absolute;z-index:3;bottom:-4px;left:calc(50% - 5px);width:10px;height:10px;border-radius:50%;background:#aab4c3}.gauge-value{font-size:1.05rem;font-weight:800;margin-bottom:.2rem}.pill{display:inline-block;border-radius:999px;padding:.38rem .8rem;background:#123522;color:#56d68c;font-weight:800;font-size:.8rem}.pill.red{background:#3a1e25;color:#ff8d9a}.pill.yellow{background:#3d3017;color:#f4c45d}.summary{font-size:1.6rem;font-weight:800;margin:.75rem 0 .3rem}.summary.green{color:#56d68c}.summary.red{color:#ff8d9a}.summary.yellow{color:#f4c45d}.notice{border-radius:10px;padding:.65rem .8rem;background:#202733;color:#aab4c3;font-size:.78rem;margin-top:.75rem}.notice.green{background:#123522;color:#56d68c}.notice.red{background:#3a1e25;color:#ff8d9a}
 .kpi-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:.45rem;margin:.35rem 0 .6rem}.kpi{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:.42rem .55rem;min-height:45px}.kpi span{display:block;color:#8b949e;font-size:.64rem}.kpi strong{display:block;color:#f0f6fc;font-size:.86rem;margin-top:.15rem}.kpi strong.positive{color:#3fb950}.kpi strong.negative{color:#ff7b72}
 .main-grid{display:grid;grid-template-columns:1.1fr 1fr 1.15fr;gap:.55rem;margin:.45rem 0}.bottom-grid{display:grid;grid-template-columns:1.55fr 1fr;gap:.55rem;margin-top:.55rem}.panel-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:.55rem .65rem;min-height:0}.center-panel{display:flex;flex-direction:column;align-items:center}.center-panel .gauge-wrap{transform:scale(.83);transform-origin:top center;margin-bottom:-1.15rem}.panel-title{font-size:.78rem;font-weight:800;color:#f0f6fc;margin-bottom:.4rem}.tf-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:.35rem}.tf-card{background:#202733;border:1px solid #30363d;border-radius:7px;padding:.42rem .3rem;text-align:center;min-height:42px}.tf-card b{display:block;color:#f0f6fc;font-size:.7rem}.tf-card span{display:block;color:#8b949e;font-size:.63rem;margin-top:.12rem;font-weight:700}.tf-card.positive span{color:#3fb950}.tf-card.negative span{color:#ff7b72}.tf-card.neutral span{color:#f4c45d}.tf-card.active{border-color:#3b82f6;background:#1b2734}.compact-table{width:100%;border-collapse:collapse;font-size:.66rem}.compact-table th{color:#8b949e;text-align:left;font-weight:600;padding:.24rem .25rem;border-bottom:1px solid #30363d}.compact-table td{padding:.24rem .25rem;color:#d1d5db;border-bottom:1px solid #242a33}.compact-table td.positive{color:#3fb950;font-weight:700}.compact-table td.negative{color:#ff7b72;font-weight:700}.compact-table td.neutral{color:#f4c45d;font-weight:700}.compact-table td.high-impact{color:#ff7b72;font-weight:800}.compact-table td.medium-impact{color:#f4c45d;font-weight:800}.compact-table td.low-impact{color:#8b949e}.use-list{margin:.15rem 0 .45rem;padding-left:1.15rem;color:#c9d1d9;font-size:.7rem;line-height:1.5}.empty{color:#8b949e;font-size:.7rem}@media (max-width:1100px){.kpi-grid{grid-template-columns:repeat(3,1fr)}.main-grid,.bottom-grid{grid-template-columns:1fr}.center-panel{align-items:stretch}}
+.tf-card span.metrics{color:#8b949e!important;font-weight:500;text-align:left;line-height:1.3}
 .question-button button{font-size:.60rem!important;line-height:1.05!important;padding:.16rem .28rem!important;min-height:0!important;height:25px!important;margin:0!important}.question-button{margin-bottom:.12rem!important}
 div[data-testid="stButton"] button{font-size:.60rem!important;line-height:1.05!important;padding:.16rem .28rem!important;min-height:0!important;height:25px!important}
 .ai-status{color:#3fb950;font-size:.78rem;font-weight:800;margin-bottom:.35rem}
@@ -306,6 +307,46 @@ def _render_audio_button(text: str) -> None:
     )
 
 
+@st.cache_data(ttl=15, show_spinner=False)
+def _evaluation_report_for_ui(symbol: str) -> dict:
+    if not EVALUATION_ENGINE_ENABLED:
+        return {}
+    db_path = os.path.join(os.path.dirname(__file__), "data", "po3_learning.sqlite")
+    try:
+        return build_evaluation_report(db_path, symbol)
+    except Exception:
+        return {}
+
+
+def _format_points_for_card(value) -> str:
+    if value is None:
+        return "—"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    text = f"{number:.0f}" if number.is_integer() else f"{number:.1f}"
+    text = text.replace(".", ",")
+    if number > 0:
+        text = "+" + text
+    return f"{text} pontos"
+
+
+def _card_evaluation_lines(report: dict, horizon: str) -> list[str]:
+    item = report.get("horizons", {}).get(horizon, {})
+    metrics = item.get("metrics", {})
+    close = metrics.get("absolute_change", {})
+    high = metrics.get("high_delta", {})
+    low = metrics.get("low_delta", {})
+    return [
+        f"M: {_format_points_for_card(close.get('median'))}",
+        f"P25: {_format_points_for_card(close.get('p25'))}",
+        f"P75: {_format_points_for_card(close.get('p75'))}",
+        f"HM: {_format_points_for_card(high.get('median'))}",
+        f"LM: {_format_points_for_card(low.get('median'))}",
+    ]
+
+
 def render_panel(snapshot):
     macro = snapshot.macro or {}
     score = score_value(macro.get("score"))
@@ -329,12 +370,17 @@ def render_panel(snapshot):
 
     frame_keys = ["M1", "M5", "M15", "M30", "H1", "H4", "D1", "W1", "MN1"]
     labels = ["1 min", "5 min", "15 min", "30 min", "1 hora", "4 horas", "Diário", "Semanal", "Mensal"]
+    evaluation_report = _evaluation_report_for_ui(snapshot.symbol)
+    evaluation_horizons = {"M5": "5m", "M15": "15m", "M30": "30m", "H1": "60m",
+                           "D1": "Diário", "W1": "Semanal", "MN1": "Mensal"}
     timeframe_rows = []
     for label, key in zip(labels, frame_keys):
         data = frames.get(key, {})
         status = bias(score_value(data.get("score")))[0] if data.get("available") and data.get("score") is not None else "Sem dados"
         cls = "active" if key == "M15" else _tone_class(data.get("score"))
-        timeframe_rows.append(f'<div class="tf-card {cls}"><b>{label}</b><span>{status}</span></div>')
+        metric_lines = _card_evaluation_lines(evaluation_report, evaluation_horizons[key]) if key in evaluation_horizons else ["M: —", "P25: —", "P75: —", "HM: —", "LM: —"]
+        metrics_html = "".join(f'<span class="metrics">{line}</span>' for line in metric_lines)
+        timeframe_rows.append(f'<div class="tf-card {cls}"><b>{label}</b><span>{status}</span>{metrics_html}</div>')
     tf_html = "".join(timeframe_rows)
     confidence = str(macro.get("confidence", "baixa")).upper()
     aviso = "Compra preferencial" if tone == "green" else "Venda preferencial" if tone == "red" else "Sem direção predominante"
