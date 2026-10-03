@@ -763,14 +763,14 @@ def _render_diagnostic(snapshot: dict, symbol: str) -> None:
         st.write({key: jev.get(key) for key in ("id", "market_state_id", "cutoff_at_utc", "status", "created_at_utc", "finished_at_utc", "error_type", "error_message")})
 
 
-def render_operational_supervisor(symbol: str) -> None:
+def render_operational_supervisor(symbol: str) -> dict | None:
     """Exibe somente o estado resumido; os detalhes ficam no diagnóstico."""
     db_path = os.path.join(os.path.dirname(__file__), "data", "po3_learning.sqlite")
     try:
         snapshot = build_supervisor_snapshot(db_path, symbol)
     except Exception:
         st.markdown("**Supervisor do painel:** ERRO")
-        return
+        return None
     overall = snapshot.get("overall_status")
     if overall in {"OPERACAO_NORMAL", "AGUARDANDO_SESSAO"}:
         compact_status = "OK"
@@ -779,7 +779,7 @@ def render_operational_supervisor(symbol: str) -> None:
     else:
         compact_status = "ATENÇÃO"
     st.markdown(f"**Supervisor do painel:** {compact_status}")
-    _render_diagnostic(snapshot, symbol)
+    return snapshot
 
 
 def render_evaluation(symbol: str) -> None:
@@ -920,7 +920,6 @@ with st.sidebar:
     terminal = st.text_input("Terminal MT5", DEFAULT_TERMINAL)
     auto = st.toggle("Atualização automática", True)
     seconds = st.slider("Intervalo de atualização", 5, 60, 15, 5)
-    st.caption("Conexão somente leitura. O painel não envia ordens.")
 
 @st.fragment(run_every=f"{seconds}s" if auto else None)
 def live():
@@ -933,7 +932,10 @@ def live():
 
 @st.fragment(run_every="15s")
 def supervisor_live():
-    render_operational_supervisor(symbol)
+    supervisor_snapshot = render_operational_supervisor(symbol)
+    if supervisor_snapshot is not None:
+        with st.sidebar:
+            _render_diagnostic(supervisor_snapshot, symbol)
 
 supervisor_live()
 live()
