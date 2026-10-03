@@ -943,23 +943,30 @@ with st.sidebar:
     terminal = st.text_input("Terminal MT5", DEFAULT_TERMINAL)
     auto = st.toggle("Atualização automática", True)
     seconds = st.slider("Intervalo de atualização", 5, 60, 15, 5)
+    sidebar_diagnostic_slot = st.empty()
+    sidebar_evaluation_slot = st.empty()
+
+supervisor_status_slot = st.empty()
+main_live_slot = st.empty()
 
 @st.fragment(run_every=f"{seconds}s" if auto else None)
 def live():
     try:
         snapshot = read_snapshot(terminal, symbol)
         st.session_state["latest_snapshot"] = snapshot
-        render_panel(snapshot)
-        with st.sidebar:
+        with main_live_slot.container():
+            render_panel(snapshot)
+        with sidebar_evaluation_slot.container():
             render_evaluation(symbol)
     except MT5ReadError as exc:
         st.session_state["snapshot_error"] = str(exc)
 
 @st.fragment(run_every="15s")
 def supervisor_live():
-    supervisor_snapshot = render_operational_supervisor(symbol)
+    with supervisor_status_slot.container():
+        supervisor_snapshot = render_operational_supervisor(symbol)
     if supervisor_snapshot is not None:
-        with st.sidebar:
+        with sidebar_diagnostic_slot.container():
             _render_diagnostic(supervisor_snapshot, symbol)
 
 supervisor_live()
