@@ -26,6 +26,7 @@ DEFAULT_TERMINAL = r"C:\Program Files\Clear Investimentos MT5 Terminal\terminal6
 st.set_page_config(page_title="PO3 Copilot B3", page_icon=":material/monitoring:", layout="wide")
 st.markdown("""
 <style>
+[data-stale="true"]{opacity:1!important;transition:none!important}
 .stApp{background:#0d1117;color:#e6edf3}.block-container{max-width:1480px;padding:.55rem 1rem 1rem}
 [data-testid="stSidebar"]{background:#11161d;border-right:1px solid #30363d}
 .brand{display:flex;align-items:center;gap:.8rem;margin:.2rem 0 1.25rem}.brand-mark{width:40px;height:40px;border-radius:12px;background:#0b7d3e;color:white;display:grid;place-items:center;font-weight:800;font-size:1.15rem}.brand-title{font-size:1.18rem;font-weight:800;line-height:1.1}.brand-sub{color:#758093;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;margin-top:.22rem}
