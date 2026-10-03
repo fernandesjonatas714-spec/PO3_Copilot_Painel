@@ -394,7 +394,7 @@ def render_panel(snapshot):
     leaders = macro.get("leaders", [])
     frames = macro.get("frames", {})
 
-    st.markdown(f'''<div class="topline"><div><div class="asset-title">{snapshot.symbol}</div><div class="asset-meta"><span class="live-dot"></span>MT5 conectado · somente leitura · {snapshot.as_of.strftime('%d/%m/%Y %H:%M:%S')}</div></div><div class="source-chip">⟳ atualização automática</div></div>''', unsafe_allow_html=True)
+    st.markdown(f'''<div class="topline"><div><div class="asset-title">{snapshot.symbol}</div><div class="asset-meta"><span class="live-dot"></span>MT5 conectado · somente leitura · {snapshot.as_of.strftime('%d/%m/%Y %H:%M:%S')}</div></div></div>''', unsafe_allow_html=True)
 
     kpis = [
         ("Ativo", snapshot.symbol, ""),
@@ -950,6 +950,8 @@ def live():
         snapshot = read_snapshot(terminal, symbol)
         st.session_state["latest_snapshot"] = snapshot
         render_panel(snapshot)
+        with st.sidebar:
+            render_evaluation(symbol)
     except MT5ReadError as exc:
         st.session_state["snapshot_error"] = str(exc)
 
@@ -963,7 +965,5 @@ def supervisor_live():
 supervisor_live()
 live()
 render_jev_shadow(symbol)
-if "latest_snapshot" in st.session_state:
-    render_evaluation(symbol)
 if "latest_snapshot" in st.session_state:
     render_local_chat(st.session_state["latest_snapshot"])
