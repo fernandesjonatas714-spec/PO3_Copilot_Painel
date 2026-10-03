@@ -730,6 +730,20 @@ def render_evaluation(symbol: str) -> None:
         with st.expander("Avaliação V2", expanded=False):
             st.caption(f"Avaliação indisponível: {type(exc).__name__}")
         return
+
+    def format_points(value):
+        if value is None:
+            return "—"
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        text = f"{number:.0f}" if number.is_integer() else f"{number:.1f}"
+        text = text.replace(".", ",")
+        if number > 0:
+            text = "+" + text
+        return text
+
     with st.expander("Avaliação V2", expanded=False):
         st.caption(f"Versão {report['evaluation_version']} · geração UTC {report['generated_at_utc']}")
         if not report["market_states"]:
@@ -748,10 +762,13 @@ def render_evaluation(symbol: str) -> None:
                 st.caption("Amostra mais robusta para análise descritiva.")
             status = item["status"]
             st.write("Cobertura:", " · ".join(f"{key}: {value}" for key, value in sorted(status.items())) or "Sem Outcomes")
-            stats = item["metrics"]["percentage_change"]
-            st.write({"Mediana %": stats["median"], "P25": stats["p25"], "P75": stats["p75"],
-                      "High delta mediano": item["metrics"]["high_delta"]["median"],
-                      "Low delta mediano": item["metrics"]["low_delta"]["median"]})
+            close_points = item["metrics"]["absolute_change"]
+            high_points = item["metrics"]["high_delta"]["median"]
+            low_points = item["metrics"]["low_delta"]["median"]
+            st.write(f"Fechamento mediano: {format_points(close_points['median'])} pontos")
+            st.write(f"Faixa P25–P75: {format_points(close_points['p25'])} a {format_points(close_points['p75'])} pontos")
+            st.write(f"Máxima mediana: {format_points(high_points)} pontos")
+            st.write(f"Mínima mediana: {format_points(low_points)} pontos")
             distribution = item["directional_distribution"]
             st.caption(f"Movimento futuro — Positivo: {distribution['positive']} · Negativo: {distribution['negative']} · Neutro: {distribution['zero']}")
         quality = report["data_quality"]
