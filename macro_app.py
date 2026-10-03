@@ -347,6 +347,21 @@ def _card_evaluation_lines(report: dict, horizon: str) -> list[str]:
     ]
 
 
+def _card_evaluation_sample(report: dict, horizon: str) -> list[str]:
+    item = report.get("horizons", {}).get(horizon, {})
+    distribution = item.get("directional_distribution", {})
+
+    def _count(name: str) -> str:
+        value = distribution.get(name)
+        return "—" if value is None else str(value)
+
+    return [
+        f"Alta: {_count('positive')}",
+        f"Baixa: {_count('negative')}",
+        f"Neutro: {_count('zero')}",
+    ]
+
+
 def render_panel(snapshot):
     macro = snapshot.macro or {}
     score = score_value(macro.get("score"))
@@ -380,7 +395,9 @@ def render_panel(snapshot):
         cls = "active" if key == "M15" else _tone_class(data.get("score"))
         metric_lines = _card_evaluation_lines(evaluation_report, evaluation_horizons[key]) if key in evaluation_horizons else ["M: —", "P25: —", "P75: —", "HM: —", "LM: —"]
         metrics_html = "".join(f'<span class="metrics">{line}</span>' for line in metric_lines)
-        timeframe_rows.append(f'<div class="tf-card {cls}"><b>{label}</b><span>{status}</span>{metrics_html}</div>')
+        sample_lines = _card_evaluation_sample(evaluation_report, evaluation_horizons[key]) if key in evaluation_horizons else ["Alta: —", "Baixa: —", "Neutro: —"]
+        sample_html = '<span class="metrics">Amostra Fechamento</span>' + "".join(f'<span class="metrics">{line}</span>' for line in sample_lines)
+        timeframe_rows.append(f'<div class="tf-card {cls}"><b>{label}</b><span>{status}</span>{metrics_html}{sample_html}</div>')
     tf_html = "".join(timeframe_rows)
     confidence = str(macro.get("confidence", "baixa")).upper()
     aviso = "Compra preferencial" if tone == "green" else "Venda preferencial" if tone == "red" else "Sem direção predominante"
